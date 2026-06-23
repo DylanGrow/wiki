@@ -327,3 +327,77 @@ html.light-theme textarea::placeholder {
     color: #222 !important;
   }
 }
+
+/* Command Palette Overlay */
+.command-palette-backdrop {
+  background-color: rgba(9, 13, 22, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+.command-palette-modal {
+  background-color: #0c1220;
+  border: 1px solid rgba(20, 184, 166, 0.25);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5), 0 0 15px rgba(20, 184, 166, 0.1);
+}
+
+.command-item-active {
+  background-color: rgba(20, 184, 166, 0.15) !important;
+  color: #14b8a6 !important;
+  border-left: 2px solid #14b8a6;
+}
+
+/* Autocomplete Suggestion Popup */
+.editor-autocomplete-list {
+  background-color: #0c1220;
+  border: 1px solid #1e293b;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
+  max-height: 180px;
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.editor-autocomplete-item:hover, .editor-autocomplete-item.active {
+  background-color: rgba(20, 184, 166, 0.15);
+  color: #14b8a6;
+}
+
+/* Tactical Link Map Canvas styles */
+#tactical-map-canvas {
+  cursor: grab;
+}
+
+#tactical-map-canvas:active {
+  cursor: grabbing;
+}
+
+/* Custom Tag Color Mappings */
+.tag-color-red {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.tag-color-teal {
+  background-color: rgba(20, 184, 166, 0.15);
+  color: #2dd4bf;
+  border: 1px solid rgba(20, 184, 166, 0.3);
+}
+
+.tag-color-blue {
+  background-color: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.tag-color-amber {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.tag-color-slate {
+  background-color: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+

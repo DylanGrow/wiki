@@ -5,6 +5,7 @@ export interface WikiPage {
   updatedAt: number;
   tags: string[];
   isSystem?: boolean;
+  isEncrypted?: boolean;
 }
 
 export interface PageRevision {
@@ -13,6 +14,7 @@ export interface PageRevision {
   title: string;
   content: string;
   updatedAt: number;
+  isEncrypted?: boolean;
 }
 
 const DB_NAME = 'secops-wiki-db';

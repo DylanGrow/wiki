@@ -131,3 +131,76 @@ export function validateImportedPage(data: any): WikiPage {
     isSystem: !!data.isSystem
   };
 }
+
+/**
+ * Derives a CryptoKey from a user passphrase using PBKDF2.
+ */
+export async function deriveKey(passphrase: string): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const salt = enc.encode('secops-intel-salt-2026');
+  const baseKey = await window.crypto.subtle.importKey(
+    'raw',
+    enc.encode(passphrase),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+  return window.crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: 100000,
+      hash: 'SHA-256'
+    },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+/**
+ * Encrypts cleartext using AES-GCM 256-bit key.
+ */
+export async function encryptText(text: string, key: CryptoKey): Promise<string> {
+  const enc = new TextEncoder();
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await window.crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv },
+    key,
+    enc.encode(text)
+  );
+  
+  const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
+  const ciphertextBytes = new Uint8Array(ciphertext);
+  let ciphertextBinary = '';
+  for (let i = 0; i < ciphertextBytes.byteLength; i++) {
+    ciphertextBinary += String.fromCharCode(ciphertextBytes[i]);
+  }
+  const ciphertextBase64 = btoa(ciphertextBinary);
+  return `${ivHex}:${ciphertextBase64}`;
+}
+
+/**
+ * Decrypts ciphertext using AES-GCM 256-bit key.
+ */
+export async function decryptText(encryptedStr: string, key: CryptoKey): Promise<string> {
+  const parts = encryptedStr.split(':');
+  if (parts.length !== 2) throw new Error('Invalid cipher format');
+  const [ivHex, ciphertextBase64] = parts;
+  
+  const iv = new Uint8Array(ivHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+  const binaryStr = atob(ciphertextBase64);
+  const ciphertext = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) {
+    ciphertext[i] = binaryStr.charCodeAt(i);
+  }
+  
+  const decrypted = await window.crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: iv },
+    key,
+    ciphertext
+  );
+  
+  return new TextDecoder().decode(decrypted);
+}

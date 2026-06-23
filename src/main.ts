@@ -1,5 +1,5 @@
 import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, saveRevision, getPageRevisions } from './db';
-import { renderMarkdownSecure, validateImportedPage, escapeHtml, getSanitizationCount, sanitizeUnicode } from './security';
+import { renderMarkdownSecure, validateImportedPage, escapeHtml, getSanitizationCount, sanitizeUnicode, deriveKey, encryptText, decryptText } from './security';
 
 // State Management
 let currentPageSlug = 'home';
@@ -11,6 +11,14 @@ let wikiPagesList: WikiPage[] = [];
 let deferredInstallPrompt: any = null;
 let networkStatus = navigator.onLine ? 'SECURE_LINK' : 'OFFLINE_CACHE';
 let currentTheme = localStorage.getItem('secops-wiki-theme') || 'dark';
+
+// Extended State Management (Encryption, Command Palette, Autocomplete)
+let activeCryptoKey: CryptoKey | null = null;
+let isCommandPaletteOpen = false;
+let activeCommandIndex = 0;
+let isAutocompleteActive = false;
+let autocompleteStartIndex = -1;
+let autocompleteQuery = '';
 
 function applyTheme() {
   const html = document.documentElement;
@@ -39,6 +47,157 @@ function highlightText(html: string, query: string): string {
   const escapedQuery = query.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
   const regex = new RegExp(`(?![^<>]*>)(${escapedQuery})`, 'gi');
   return html.replace(regex, '<mark class="bg-teal-500/30 text-teal-300 px-0.5 rounded font-medium">$1</mark>');
+}
+
+function getTagColor(tag: string): { bg: string, text: string, border: string, className: string } {
+  const t = tag.toLowerCase().trim();
+  if (/(sec|security|critical|panic|destruct|lock|key|auth)/.test(t)) {
+    return { bg: 'rgba(239, 68, 68, 0.15)', text: '#f87171', border: 'rgba(239, 68, 68, 0.3)', className: 'tag-color-red' };
+  }
+  if (/(doc|manual|wiki|guide|system|dashboard|home)/.test(t)) {
+    return { bg: 'rgba(20, 184, 166, 0.15)', text: '#2dd4bf', border: 'rgba(20, 184, 166, 0.3)', className: 'tag-color-teal' };
+  }
+  if (/(config|settings|sys|admin|db|telemetry)/.test(t)) {
+    return { bg: 'rgba(59, 130, 246, 0.15)', text: '#60a5fa', border: 'rgba(59, 130, 246, 0.3)', className: 'tag-color-blue' };
+  }
+  if (/(warning|caution|issue|bug|fix)/.test(t)) {
+    return { bg: 'rgba(245, 158, 11, 0.15)', text: '#fbbf24', border: 'rgba(245, 158, 11, 0.3)', className: 'tag-color-amber' };
+  }
+  return { bg: 'rgba(148, 163, 184, 0.15)', text: '#cbd5e1', border: 'rgba(148, 163, 184, 0.3)', className: 'tag-color-slate' };
+}
+
+function scoreSearchResult(page: WikiPage, query: string): number {
+  const q = query.toLowerCase().trim();
+  if (!q) return 0;
+  
+  let score = 0;
+  const title = page.title.toLowerCase();
+  const content = page.content.toLowerCase();
+  const tags = page.tags.map(t => t.toLowerCase());
+  
+  if (title === q) score += 100;
+  else if (title.startsWith(q)) score += 80;
+  else if (title.includes(q)) score += 50;
+  
+  tags.forEach(tag => {
+    if (tag === q) score += 30;
+    else if (tag.includes(q)) score += 15;
+  });
+  
+  if (content.includes(q)) {
+    score += 10;
+    const matches = content.split(q).length - 1;
+    score += Math.min(10, matches);
+  }
+  
+  return score;
+}
+
+function calculateCRC32(data: Uint8Array): number {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) {
+      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c;
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) {
+    crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function generateZipArchive(files: { name: string, content: string }[]): Blob {
+  const enc = new TextEncoder();
+  const parts: BlobPart[] = [];
+  const fileOffsets: number[] = [];
+  
+  let currentOffset = 0;
+  
+  files.forEach(f => {
+    fileOffsets.push(currentOffset);
+    const fileNameBytes = enc.encode(f.name);
+    const fileDataBytes = enc.encode(f.content);
+    const crc = calculateCRC32(fileDataBytes);
+    
+    const header = new ArrayBuffer(30);
+    const view = new DataView(header);
+    
+    view.setUint32(0, 0x04034b50, true);          // Signature
+    view.setUint16(4, 10, true);                  // Version needed (1.0)
+    view.setUint16(6, 0, true);                   // Flags
+    view.setUint16(8, 0, true);                   // Compression (Stored)
+    view.setUint16(10, 0, true);                  // Mod time
+    view.setUint16(12, 0, true);                  // Mod date
+    view.setUint32(14, crc, true);                // CRC-32
+    view.setUint32(18, fileDataBytes.length, true); // Compressed size
+    view.setUint32(22, fileDataBytes.length, true); // Uncompressed size
+    view.setUint16(26, fileNameBytes.length, true); // File name length
+    view.setUint16(28, 0, true);                  // Extra field length
+    
+    const headerBytes = new Uint8Array(header);
+    parts.push(headerBytes);
+    parts.push(fileNameBytes);
+    parts.push(fileDataBytes);
+    
+    currentOffset += headerBytes.length + fileNameBytes.length + fileDataBytes.length;
+  });
+  
+  const centralDirectoryOffset = currentOffset;
+  let centralDirectorySize = 0;
+  
+  files.forEach((f, idx) => {
+    const fileNameBytes = enc.encode(f.name);
+    const fileDataBytes = enc.encode(f.content);
+    const crc = calculateCRC32(fileDataBytes);
+    const offset = fileOffsets[idx];
+    
+    const cdHeader = new ArrayBuffer(46);
+    const view = new DataView(cdHeader);
+    
+    view.setUint32(0, 0x02014b50, true);          // Signature
+    view.setUint16(4, 20, true);                  // Made by (2.0)
+    view.setUint16(6, 10, true);                  // Needed (1.0)
+    view.setUint16(8, 0, true);                   // Flags
+    view.setUint16(10, 0, true);                  // Compression
+    view.setUint16(12, 0, true);                  // Mod time
+    view.setUint16(14, 0, true);                  // Mod date
+    view.setUint32(16, crc, true);                // CRC-32
+    view.setUint32(20, fileDataBytes.length, true); // Compressed size
+    view.setUint32(24, fileDataBytes.length, true); // Uncompressed size
+    view.setUint16(28, fileNameBytes.length, true); // File name length
+    view.setUint16(30, 0, true);                  // Extra length
+    view.setUint16(32, 0, true);                  // Comment length
+    view.setUint16(34, 0, true);                  // Disk start
+    view.setUint16(36, 0, true);                  // Internal attrs
+    view.setUint32(38, 0x20, true);               // External attrs
+    view.setUint32(42, offset, true);             // Local header offset
+    
+    const cdHeaderBytes = new Uint8Array(cdHeader);
+    parts.push(cdHeaderBytes);
+    parts.push(fileNameBytes);
+    
+    centralDirectorySize += cdHeaderBytes.length + fileNameBytes.length;
+    currentOffset += cdHeaderBytes.length + fileNameBytes.length;
+  });
+  
+  const eocd = new ArrayBuffer(22);
+  const view = new DataView(eocd);
+  
+  view.setUint32(0, 0x06054b50, true);            // Signature
+  view.setUint16(4, 0, true);                    // Disk number
+  view.setUint16(6, 0, true);                    // CD disk
+  view.setUint16(8, files.length, true);          // CD records on disk
+  view.setUint16(10, files.length, true);         // Total CD records
+  view.setUint32(12, centralDirectorySize, true); // Size of CD
+  view.setUint32(16, centralDirectoryOffset, true); // Offset of start of CD
+  view.setUint16(20, 0, true);                    // Comment length
+  
+  parts.push(new Uint8Array(eocd));
+  
+  return new Blob(parts, { type: 'application/zip' });
 }
 
 // BroadcastChannel for cross-tab database sync
@@ -74,6 +233,9 @@ async function init() {
   // Setup session locking
   setupIdleTracker();
 
+  // Setup command palette modal
+  setupCommandPalette();
+
   // Handle routing
   window.addEventListener('hashchange', handleRoute);
   window.addEventListener('online', updateNetworkStatus);
@@ -85,6 +247,18 @@ async function init() {
     deferredInstallPrompt = e;
     const installBtn = document.getElementById('pwa-install-btn');
     if (installBtn) installBtn.classList.remove('hidden');
+  });
+
+  // Global command palette keyboard trigger listeners
+  window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey && e.key === 'k') || (e.ctrlKey && e.key === 'K')) {
+      e.preventDefault();
+      toggleCommandPalette();
+    }
+    if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      toggleCommandPalette();
+    }
   });
 
   // Initial Route Resolution
@@ -209,6 +383,8 @@ async function handleRoute() {
     currentPageSlug = '';
   } else if (hash === '#/system') {
     currentPageSlug = 'system';
+  } else if (hash === '#/graph') {
+    currentPageSlug = 'graph';
   } else {
     currentPageSlug = 'home';
   }
@@ -230,14 +406,18 @@ async function handleRoute() {
 async function renderLayout() {
   await refreshPagesList();
 
-  // Filter pages list by search query and tag selection
-  const filteredPages = wikiPagesList.filter(page => {
-    const matchesSearch = page.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          page.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          page.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()));
-    const matchesTag = selectedTag ? page.tags.includes(selectedTag) : true;
-    return matchesSearch && matchesTag;
-  });
+  // Filter and sort pages list by fuzzy relevance scoring and selected tag
+  let filteredPages = wikiPagesList;
+  if (searchQuery.trim().length > 0) {
+    filteredPages = filteredPages
+      .map(page => ({ page, score: scoreSearchResult(page, searchQuery) }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.page);
+  }
+  if (selectedTag) {
+    filteredPages = filteredPages.filter(page => page.tags.includes(selectedTag));
+  }
 
   const allTags = Array.from(new Set(wikiPagesList.flatMap(p => p.tags)));
 
@@ -322,9 +502,12 @@ async function renderLayout() {
         ${allTags.length > 0 ? `
           <div class="px-4 py-2 border-b border-slate-800/80 flex flex-wrap gap-1 max-h-24 overflow-y-auto shrink-0 select-none">
             <button class="tag-badge px-1.5 py-0.5 text-[9px] rounded-full font-mono transition ${!selectedTag ? 'bg-teal-500 text-slate-950 font-bold shadow-[0_0_8px_rgba(20,184,166,0.3)]' : 'bg-slate-900 text-slate-400 hover:bg-slate-850'}" data-tag="">#ALL</button>
-            ${allTags.map(tag => `
-              <button class="tag-badge px-1.5 py-0.5 text-[9px] rounded-full font-mono transition ${selectedTag === tag ? 'bg-teal-500 text-slate-950 font-bold shadow-[0_0_8px_rgba(20,184,166,0.3)]' : 'bg-slate-900 text-slate-400 hover:bg-slate-850'}" data-tag="${escapeHtml(tag)}">#${escapeHtml(tag.toUpperCase())}</button>
-            `).join('')}
+            ${allTags.map(tag => {
+              const color = getTagColor(tag);
+              return `
+                <button class="tag-badge px-1.5 py-0.5 text-[9px] rounded-full font-mono transition ${selectedTag === tag ? 'bg-teal-500 text-slate-950 font-bold shadow-[0_0_8px_rgba(20,184,166,0.3)]' : `${color.className} hover:opacity-85`}" data-tag="${escapeHtml(tag)}">#${escapeHtml(tag.toUpperCase())}</button>
+              `;
+            }).join('')}
           </div>
         ` : ''}
 
@@ -349,7 +532,10 @@ async function renderLayout() {
           <div id="pages-list" class="space-y-1">
             ${filteredPages.map(page => `
               <a href="#/page/${page.slug}" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm transition group ${currentPageSlug === page.slug && !isEditing ? 'bg-teal-950/30 text-teal-400 font-medium border-l-2 border-teal-500' : 'text-slate-400 hover:bg-slate-900/50 hover:text-slate-200'}">
-                <span class="truncate font-mono">${escapeHtml(page.title)}</span>
+                <span class="truncate font-mono flex items-center gap-1">
+                  ${page.isEncrypted ? '<span class="text-red-400">🔒</span>' : ''}
+                  ${escapeHtml(page.title)}
+                </span>
                 ${page.isSystem ? `
                   <span class="text-[9px] bg-slate-800 text-slate-400 px-1 py-0.5 rounded font-mono uppercase scale-90">SYS</span>
                 ` : ''}
@@ -363,8 +549,11 @@ async function renderLayout() {
 
         <!-- Footer Control Center -->
         <div class="p-4 border-t border-slate-800/80 bg-slate-950/30 flex gap-2 shrink-0">
-          <a href="#/system" class="flex-1 text-center py-2 px-3 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg text-xs font-mono text-slate-300 uppercase hover:text-white transition">
-            SYSTEM ADMIN
+          <a href="#/graph" class="flex-1 text-center py-2 px-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg text-[10px] font-mono text-slate-300 uppercase hover:text-white transition">
+            MAP VIEW
+          </a>
+          <a href="#/system" class="flex-1 text-center py-2 px-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg text-[10px] font-mono text-slate-300 uppercase hover:text-white transition">
+            ADMIN
           </a>
         </div>
       </aside>
@@ -501,6 +690,11 @@ async function renderLayout() {
 async function resolveContentView() {
   const contentPortal = document.getElementById('main-content')!;
 
+  if (currentPageSlug === 'graph') {
+    await renderGraphView(contentPortal);
+    return;
+  }
+
   if (currentPageSlug === 'system') {
     renderSystemView(contentPortal);
     return;
@@ -537,11 +731,61 @@ async function renderPageView(container: HTMLElement) {
   // Load Revisions
   const revisions = await getPageRevisions(page.slug);
 
+  let displayContent = page.content;
+  let isLocked = false;
+  
+  if (page.isEncrypted) {
+    if (activeCryptoKey) {
+      try {
+        displayContent = await decryptText(page.content, activeCryptoKey);
+      } catch (err) {
+        isLocked = true;
+      }
+    } else {
+      isLocked = true;
+    }
+  }
+
+  if (isLocked) {
+    container.innerHTML = `
+      <div class="max-w-md mx-auto my-20 p-6 glass-panel border border-teal-900/30 rounded-xl text-center glow-border select-none">
+        <svg class="w-16 h-16 text-teal-500 mx-auto mb-4 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+        </svg>
+        <h2 class="text-xl font-bold font-mono text-white mb-2 uppercase">DECRYPT_REQUIRED</h2>
+        <p class="text-slate-400 text-xs font-mono mb-6">This document payload is encrypted. Enter passphrase to decrypt.</p>
+        <form id="decrypt-doc-form" class="space-y-4">
+          <input type="password" id="decrypt-password-input" placeholder="Enter security passphrase..." class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base text-slate-200 focus:outline-none transition font-mono text-center">
+          <button type="submit" class="w-full py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.2)]">
+            DECRYPT IN-MEMORY
+          </button>
+        </form>
+      </div>
+    `;
+    
+    const form = document.getElementById('decrypt-doc-form') as HTMLFormElement;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pwd = (document.getElementById('decrypt-password-input') as HTMLInputElement).value;
+      try {
+        const key = await deriveKey(pwd);
+        // Test decrypt
+        await decryptText(page.content, key);
+        activeCryptoKey = key;
+        await renderLayout(); // Rerender
+      } catch (err) {
+        alert('Security Alert: Authentication failed. Invalid security passphrase.');
+      }
+    });
+    return;
+  }
+
   // Estimate Read Time (200 words per minute average)
-  const wordCount = page.content.split(/\s+/).filter(w => w.length > 0).length;
+  const wordCount = displayContent.split(/\s+/).filter(w => w.length > 0).length;
   const readTime = Math.max(1, Math.round(wordCount / 200));
 
-  const rawRenderedContent = renderMarkdownSecure(page.content);
+  const rawRenderedContent = renderMarkdownSecure(displayContent);
   // Highlight search queries
   const renderedContent = highlightText(rawRenderedContent, searchQuery);
   const updatedDate = new Date(page.updatedAt).toLocaleString();
@@ -720,6 +964,17 @@ async function renderPageView(container: HTMLElement) {
       }
     });
   });
+
+  // Bind Checklist Click Handler to toggle checkbox in IndexedDB content
+  container.querySelectorAll('.wiki-content input[type="checkbox"]').forEach((checkbox, idx) => {
+    const cb = checkbox as HTMLInputElement;
+    cb.removeAttribute('disabled');
+    cb.classList.add('cursor-pointer', 'accent-teal-500');
+    cb.addEventListener('change', async (e) => {
+      const target = e.target as HTMLInputElement;
+      await toggleMarkdownCheckbox(page.slug, idx, target.checked);
+    });
+  });
 }
 
 // 2. Render Wiki Page Editor (Edit & New Page)
@@ -730,6 +985,7 @@ async function renderEditView(container: HTMLElement) {
   let initialTags = '';
   let isSystemPage = false;
 
+  let isEncryptedInit = false;
   if (!isNewPage) {
     const page = await getPage(currentPageSlug);
     if (page) {
@@ -738,6 +994,19 @@ async function renderEditView(container: HTMLElement) {
       initialContent = page.content;
       initialTags = page.tags.join(', ');
       isSystemPage = !!page.isSystem;
+      isEncryptedInit = !!page.isEncrypted;
+      
+      if (page.isEncrypted) {
+        if (activeCryptoKey) {
+          try {
+            initialContent = await decryptText(page.content, activeCryptoKey);
+          } catch {
+            initialContent = 'ERROR: Decryption key mismatch. Please go back and re-decrypt.';
+          }
+        } else {
+          initialContent = 'ERROR: This page is encrypted. Decrypt it in the reader view first.';
+        }
+      }
     }
   }
 
@@ -805,11 +1074,23 @@ async function renderEditView(container: HTMLElement) {
         <div>
           <div class="flex items-center justify-between mb-2">
             <label class="text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono">Markdown Content payload</label>
-            <span class="hidden md:inline text-[10px] text-slate-500 font-mono">Live editor preview enabled</span>
+            <span class="hidden md:inline text-[10px] text-slate-500 font-mono">Live editor preview enabled (Type [[ for page links)</span>
+          </div>
+          <!-- Formatting Toolbar -->
+          <div class="flex flex-wrap gap-1 p-2 bg-slate-950/80 border border-slate-800 border-b-0 rounded-t-lg select-none">
+            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="bold">B</button>
+            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="italic">I</button>
+            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="header">H3</button>
+            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="code">Code</button>
+            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="link">Link</button>
+            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="table">Table</button>
+            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="checklist">Todo</button>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div id="edit-content-container" class="block">
-              <textarea id="edit-content" rows="16" required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-4 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono" placeholder="Enter markdown payload here...">${escapeHtml(initialContent)}</textarea>
+            <div id="edit-content-container" class="block relative">
+              <textarea id="edit-content" rows="16" required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-b-lg p-4 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono border-t-0" placeholder="Enter markdown payload here...">${escapeHtml(initialContent)}</textarea>
+              <!-- Auto-complete popup -->
+              <div id="autocomplete-popup" class="absolute left-4 top-12 w-64 editor-autocomplete-list rounded-lg hidden font-mono text-xs max-h-40 overflow-y-auto"></div>
             </div>
             <div id="live-preview-container" class="hidden md:block">
               <div id="live-preview-box" class="w-full h-[375px] md:h-full min-h-[384px] overflow-y-auto bg-slate-950/30 border border-slate-800 rounded-lg p-4 wiki-content">
@@ -819,14 +1100,20 @@ async function renderEditView(container: HTMLElement) {
           </div>
         </div>
 
-        <!-- Actions -->
-        <div class="flex justify-end gap-3 pt-4 border-t border-slate-800">
-          <a href="${isNewPage ? '#/page/home' : `#/page/${currentPageSlug}`}" id="cancel-edit-btn" class="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
-            Cancel
-          </a>
-          <button type="submit" class="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.15)]">
-            Commit Changes
-          </button>
+        <!-- Encryption Option & Actions -->
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-4 border-t border-slate-800">
+          <div class="flex items-center gap-2">
+            <input type="checkbox" id="edit-encrypt" ${isEncryptedInit ? 'checked' : ''} class="w-4 h-4 rounded border-slate-850 bg-slate-950 text-teal-500 focus:ring-teal-500/50 cursor-pointer">
+            <label for="edit-encrypt" class="text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono cursor-pointer select-none">Encrypt Document (AES-GCM)</label>
+          </div>
+          <div class="flex gap-3 justify-end self-end sm:self-auto">
+            <a href="${isNewPage ? '#/page/home' : `#/page/${currentPageSlug}`}" id="cancel-edit-btn" class="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
+              Cancel
+            </a>
+            <button type="submit" class="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.15)]">
+              Commit Changes
+            </button>
+          </div>
         </div>
       </form>
     </div>
@@ -870,6 +1157,114 @@ async function renderEditView(container: HTMLElement) {
     }
     previewBox.innerHTML = renderMarkdownSecure(markdown);
   };
+
+  // Bind Formatting Toolbar inserts
+  const insertFormatting = (format: string) => {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = textarea.value;
+    const selectedText = text.substring(start, end);
+    let replacement = '';
+    
+    switch (format) {
+      case 'bold':
+        replacement = `**${selectedText || 'bold_text'}**`;
+        break;
+      case 'italic':
+        replacement = `*${selectedText || 'italic_text'}*`;
+        break;
+      case 'header':
+        replacement = `\n### ${selectedText || 'Header text'}\n`;
+        break;
+      case 'code':
+        replacement = `\n\`\`\`javascript\n${selectedText || '// code here'}\n\`\`\`\n`;
+        break;
+      case 'link':
+        replacement = `[${selectedText || 'Link text'}](url)`;
+        break;
+      case 'table':
+        replacement = `\n| Header 1 | Header 2 |\n| -------- | -------- |\n| Cell 1   | Cell 2   |\n`;
+        break;
+      case 'checklist':
+        replacement = `\n- [ ] ${selectedText || 'Task description'}\n`;
+        break;
+    }
+    
+    textarea.value = text.substring(0, start) + replacement + text.substring(end);
+    textarea.focus();
+    textarea.selectionStart = start + replacement.length;
+    textarea.selectionEnd = start + replacement.length;
+    updatePreview();
+  };
+  
+  container.querySelectorAll('.format-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const format = (e.currentTarget as HTMLButtonElement).getAttribute('data-format') || '';
+      insertFormatting(format);
+    });
+  });
+
+  // Autocomplete Link Triggers in Editor
+  textarea.addEventListener('keyup', (e) => {
+    const val = textarea.value;
+    const pos = textarea.selectionStart;
+    const lastTwo = val.substring(pos - 2, pos);
+    
+    if (lastTwo === '[[') {
+      isAutocompleteActive = true;
+      autocompleteStartIndex = pos;
+      autocompleteQuery = '';
+      showAutocompletePopup(textarea);
+    } else if (isAutocompleteActive) {
+      if (e.key === 'Escape' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Enter') {
+        return;
+      }
+      const currentText = val.substring(autocompleteStartIndex, pos);
+      if (currentText.includes('\n') || pos < autocompleteStartIndex) {
+        hideAutocompletePopup();
+      } else {
+        autocompleteQuery = currentText;
+        updateAutocompletePopup(textarea);
+      }
+    }
+  });
+
+  textarea.addEventListener('keydown', (e) => {
+    if (isAutocompleteActive) {
+      const popup = document.getElementById('autocomplete-popup');
+      if (!popup) return;
+      const items = popup.querySelectorAll('.editor-autocomplete-item');
+      let activeIndex = Array.from(items).findIndex(el => el.classList.contains('active'));
+      
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (items.length > 0) {
+          if (activeIndex >= 0) items[activeIndex].classList.remove('active', 'bg-teal-950/20', 'text-teal-400');
+          activeIndex = (activeIndex + 1) % items.length;
+          items[activeIndex].classList.add('active', 'bg-teal-950/20', 'text-teal-400');
+          items[activeIndex].scrollIntoView({ block: 'nearest' });
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (items.length > 0) {
+          if (activeIndex >= 0) items[activeIndex].classList.remove('active', 'bg-teal-950/20', 'text-teal-400');
+          activeIndex = (activeIndex - 1 + items.length) % items.length;
+          items[activeIndex].classList.add('active', 'bg-teal-950/20', 'text-teal-400');
+          items[activeIndex].scrollIntoView({ block: 'nearest' });
+        }
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (activeIndex >= 0) {
+          (items[activeIndex] as HTMLElement).click();
+        } else if (items.length > 0) {
+          (items[0] as HTMLElement).click();
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        hideAutocompletePopup();
+      }
+    }
+  });
   
   textarea.addEventListener('input', updatePreview);
   updatePreview(); // Initial render
@@ -894,6 +1289,7 @@ async function renderEditView(container: HTMLElement) {
   const cleanUpDraft = () => {
     clearInterval(autoSaveInterval);
     localStorage.removeItem(draftKey);
+    hideAutocompletePopup();
   };
 
   cancelBtn.addEventListener('click', cleanUpDraft);
@@ -914,6 +1310,7 @@ async function renderEditView(container: HTMLElement) {
       : initialSlug;
     const rawTags = (document.getElementById('edit-tags') as HTMLInputElement).value;
     const content = textarea.value;
+    const encryptChecked = (document.getElementById('edit-encrypt') as HTMLInputElement).checked;
 
     // Validate input slug
     if (isNewPage && !/^[a-z0-9-_]+$/.test(slug)) {
@@ -934,17 +1331,38 @@ async function renderEditView(container: HTMLElement) {
         slug: prevPage.slug,
         title: prevPage.title,
         content: prevPage.content,
-        updatedAt: prevPage.updatedAt
+        updatedAt: prevPage.updatedAt,
+        isEncrypted: prevPage.isEncrypted
       });
+    }
+
+    // Encrypt content if checked
+    let finalContent = content;
+    if (encryptChecked) {
+      if (!activeCryptoKey) {
+        const pwd = prompt('Enter a security passphrase to encrypt this document:');
+        if (!pwd) {
+          alert('Encryption Aborted: A security passphrase is required to save an encrypted document.');
+          return;
+        }
+        activeCryptoKey = await deriveKey(pwd);
+      }
+      try {
+        finalContent = await encryptText(content, activeCryptoKey);
+      } catch (err: any) {
+        alert(`Encryption failure: ${err.message}`);
+        return;
+      }
     }
 
     const updatedPage: WikiPage = {
       slug,
       title,
-      content,
+      content: finalContent,
       updatedAt: Date.now(),
       tags,
-      isSystem: isSystemPage
+      isSystem: isSystemPage,
+      isEncrypted: encryptChecked
     };
 
     try {
@@ -1029,15 +1447,26 @@ function renderSystemView(container: HTMLElement) {
       <div class="glass-panel border border-slate-800 rounded-xl p-5 space-y-5">
         <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider border-b border-slate-800 pb-2">Data Operations & Backups</h3>
         
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <!-- Export Backup -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <!-- Export Database JSON -->
           <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
             <div>
-              <h4 class="text-xs font-bold font-mono text-white uppercase">Export Database</h4>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Export Database JSON</h4>
               <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Export all wiki contents to a validated JSON payload file.</p>
             </div>
             <button id="system-export-btn" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
-              Download Export
+              Download JSON
+            </button>
+          </div>
+
+          <!-- Export Markdown ZIP -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Export Markdown ZIP</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Export all articles as separate .md documents inside a ZIP container.</p>
+            </div>
+            <button id="system-export-zip-btn" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
+              Download ZIP
             </button>
           </div>
 
@@ -1065,19 +1494,29 @@ function renderSystemView(container: HTMLElement) {
           </div>
         </div>
       </div>
+
+      <!-- Database Diagnostics Report Container -->
+      <div id="db-health-diagnostics" class="mt-6"></div>
     </div>
   `;
 
-  // Bind export/import/wipe actions
+  // Bind export/import/wipe/zip actions
   const exportBtn = document.getElementById('system-export-btn')!;
+  const exportZipBtn = document.getElementById('system-export-zip-btn')!;
   const importFile = document.getElementById('system-import-file') as HTMLInputElement;
   const resetBtn = document.getElementById('system-reset-btn')!;
   const statsLabel = document.getElementById('total-articles-telemetry')!;
+  const diagnosticsContainer = document.getElementById('db-health-diagnostics')!;
 
   // Dynamic telemetry value loading
   statsLabel.textContent = wikiPagesList.length.toString();
 
-  // Export database handler
+  // Trigger diagnostics run
+  if (diagnosticsContainer) {
+    runDatabaseDiagnostics(diagnosticsContainer);
+  }
+
+  // Export database JSON handler
   exportBtn.addEventListener('click', () => {
     const dataStr = JSON.stringify(wikiPagesList, null, 2);
     const blob = new Blob([dataStr], { type: 'application/json' });
@@ -1090,6 +1529,47 @@ function renderSystemView(container: HTMLElement) {
     a.click();
     
     // Clean up
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  // Export database ZIP handler
+  exportZipBtn.addEventListener('click', async () => {
+    const filesToPack: { name: string; content: string }[] = [];
+    for (const page of wikiPagesList) {
+      let content = page.content;
+      if (page.isEncrypted && activeCryptoKey) {
+        try {
+          content = await decryptText(page.content, activeCryptoKey);
+        } catch {
+          // Fallback to ciphertext if decryption fails
+        }
+      }
+      
+      const fileHeader = `---
+title: ${page.title}
+slug: ${page.slug}
+tags: ${page.tags.join(', ')}
+updated: ${new Date(page.updatedAt).toISOString()}
+encrypted: ${!!page.isEncrypted}
+---
+
+`;
+      filesToPack.push({
+        name: `${page.slug}.md`,
+        content: fileHeader + content
+      });
+    }
+
+    const zipBlob = generateZipArchive(filesToPack);
+    const url = URL.createObjectURL(zipBlob);
+    
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `secops-wiki-backup-${Date.now()}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   });
@@ -1140,7 +1620,7 @@ function renderSystemView(container: HTMLElement) {
   resetBtn.addEventListener('click', async () => {
     if (confirm('CRITICAL WARPING WARNING: Reset and delete ALL wiki pages? Custom user documents will be permanently deleted.')) {
       // Clear all items in IndexedDB
-      const request = indexedDB.open('secops-wiki-db', 1);
+      const request = indexedDB.open('secops-wiki-db', 2);
       request.onsuccess = async () => {
         const db = request.result;
         const transaction = db.transaction('pages', 'readwrite');
@@ -1155,6 +1635,777 @@ function renderSystemView(container: HTMLElement) {
       };
     }
   });
+}
+
+interface CommandPaletteItem {
+  title: string;
+  subtitle: string;
+  icon: string;
+  action: () => void;
+}
+
+// 4. Command Palette Helper Functions
+function toggleCommandPalette() {
+  const backdrop = document.getElementById('command-palette-backdrop');
+  if (!backdrop) return;
+
+  isCommandPaletteOpen = !isCommandPaletteOpen;
+  if (isCommandPaletteOpen) {
+    backdrop.classList.remove('hidden');
+    const input = document.getElementById('command-palette-input') as HTMLInputElement;
+    if (input) {
+      input.value = '';
+      input.focus();
+    }
+    activeCommandIndex = 0;
+    renderPaletteResults();
+  } else {
+    backdrop.classList.add('hidden');
+  }
+}
+
+function setupCommandPalette() {
+  if (document.getElementById('command-palette-backdrop')) return;
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'command-palette-backdrop';
+  backdrop.className = 'fixed inset-0 bg-[#090d16]/85 backdrop-blur-md z-50 flex items-start justify-center pt-20 hidden';
+  
+  backdrop.innerHTML = `
+    <div class="glass-panel border border-teal-900/30 rounded-xl w-full max-w-lg overflow-hidden shadow-2xl mx-4 glow-border">
+      <input type="text" id="command-palette-input" placeholder="Search pages or run system commands..." class="w-full bg-slate-950/80 text-white font-mono text-sm p-4 outline-none border-b border-slate-800 focus:border-teal-500/30 placeholder-slate-500 transition">
+      <div id="command-palette-results" class="max-h-80 overflow-y-auto divide-y divide-slate-850/40 p-2 space-y-1"></div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const input = document.getElementById('command-palette-input') as HTMLInputElement;
+  input.addEventListener('input', () => {
+    activeCommandIndex = 0;
+    renderPaletteResults();
+  });
+
+  input.addEventListener('keydown', handlePaletteKeydown);
+
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) {
+      toggleCommandPalette();
+    }
+  });
+}
+
+function renderPaletteResults() {
+  const input = document.getElementById('command-palette-input') as HTMLInputElement;
+  const resultsContainer = document.getElementById('command-palette-results');
+  if (!resultsContainer) return;
+
+  const query = input ? input.value.trim().toLowerCase() : '';
+  
+  const staticCommands: CommandPaletteItem[] = [
+    {
+      title: 'CREATE NEW PAGE',
+      subtitle: 'Open the editor to establish a new document',
+      icon: '➕',
+      action: () => { window.location.hash = '#/new'; }
+    },
+    {
+      title: 'TOGGLE THEME',
+      subtitle: `Switch visual style (currently ${currentTheme})`,
+      icon: '🌓',
+      action: () => { toggleTheme(); }
+    },
+    {
+      title: 'SYSTEM ADMIN',
+      subtitle: 'Access operations console and db diagnostics',
+      icon: '⚙️',
+      action: () => { window.location.hash = '#/system'; }
+    },
+    {
+      title: 'TACTICAL MAP VIEW',
+      subtitle: 'Display interactive node relationship map',
+      icon: '🗺️',
+      action: () => { window.location.hash = '#/graph'; }
+    },
+    {
+      title: 'PANIC PURGE PROTOCOL',
+      subtitle: 'Emergency self-destruct - wipes all data',
+      icon: '🚨',
+      action: () => {
+        const btn = document.getElementById('system-panic-btn');
+        if (btn) btn.click();
+      }
+    }
+  ];
+
+  let itemsHTML = '';
+  let indexCounter = 0;
+
+  const matchingStatic = staticCommands.filter(c => 
+    c.title.toLowerCase().includes(query) || c.subtitle.toLowerCase().includes(query)
+  );
+
+  let matchingPages: { page: WikiPage; score: number }[] = [];
+  if (query) {
+    matchingPages = wikiPagesList
+      .map(page => ({ page, score: scoreSearchResult(page, query) }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+  } else {
+    matchingPages = wikiPagesList.slice(0, 5).map(page => ({ page, score: 0 }));
+  }
+
+  const totalItemsCount = matchingStatic.length + matchingPages.length;
+  if (activeCommandIndex >= totalItemsCount) {
+    activeCommandIndex = 0;
+  } else if (activeCommandIndex < 0) {
+    activeCommandIndex = totalItemsCount - 1;
+  }
+
+  matchingStatic.forEach((cmd) => {
+    const isActive = indexCounter === activeCommandIndex;
+    itemsHTML += `
+      <div class="command-palette-item p-3 rounded-lg flex items-center justify-between cursor-pointer font-mono text-xs transition-all ${isActive ? 'command-item-active bg-teal-950/20 text-teal-400 border-l-2 border-teal-500' : 'text-slate-400 hover:bg-slate-900/40 hover:text-slate-200'}" data-index="${indexCounter}">
+        <div class="flex items-center gap-3">
+          <span class="text-base">${cmd.icon}</span>
+          <div>
+            <div class="font-bold text-white uppercase">${cmd.title}</div>
+            <div class="text-[10px] text-slate-500">${cmd.subtitle}</div>
+          </div>
+        </div>
+        <span class="text-[10px] text-slate-650 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-900 uppercase">CMD</span>
+      </div>
+    `;
+    indexCounter++;
+  });
+
+  matchingPages.forEach((item) => {
+    const isActive = indexCounter === activeCommandIndex;
+    const page = item.page;
+    itemsHTML += `
+      <div class="command-palette-item p-3 rounded-lg flex items-center justify-between cursor-pointer font-mono text-xs transition-all ${isActive ? 'command-item-active bg-teal-950/20 text-teal-400 border-l-2 border-teal-500' : 'text-slate-400 hover:bg-slate-900/40 hover:text-slate-200'}" data-index="${indexCounter}">
+        <div class="flex items-center gap-3">
+          <span class="text-base">${page.isEncrypted ? '🔒' : '📄'}</span>
+          <div>
+            <div class="font-bold text-white">${escapeHtml(page.title)}</div>
+            <div class="text-[10px] text-slate-500">Slug: ${escapeHtml(page.slug)} ${page.tags.length ? `• tags: #${page.tags.join(', #')}` : ''}</div>
+          </div>
+        </div>
+        <span class="text-[10px] text-slate-650 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-900 uppercase">PAGE</span>
+      </div>
+    `;
+    indexCounter++;
+  });
+
+  if (totalItemsCount === 0) {
+    itemsHTML = `<div class="text-center py-6 text-xs text-slate-600 font-mono">No matching commands or pages found.</div>`;
+  }
+
+  resultsContainer.innerHTML = itemsHTML;
+
+  const itemElements = resultsContainer.querySelectorAll('.command-palette-item');
+  itemElements.forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.getAttribute('data-index') || '0', 10);
+      executePaletteAction(idx, matchingStatic, matchingPages);
+    });
+  });
+
+  scrollActivePaletteItemIntoView();
+}
+
+function executePaletteAction(index: number, staticCommands: CommandPaletteItem[], matchingPages: { page: WikiPage }[]) {
+  toggleCommandPalette();
+  if (index < staticCommands.length) {
+    staticCommands[index].action();
+  } else {
+    const pageIdx = index - staticCommands.length;
+    if (pageIdx < matchingPages.length) {
+      window.location.hash = `#/page/${matchingPages[pageIdx].page.slug}`;
+    }
+  }
+}
+
+function handlePaletteKeydown(e: KeyboardEvent) {
+  const resultsContainer = document.getElementById('command-palette-results');
+  if (!resultsContainer) return;
+
+  const items = resultsContainer.querySelectorAll('.command-palette-item');
+  if (items.length === 0) return;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    activeCommandIndex = (activeCommandIndex + 1) % items.length;
+    renderPaletteResults();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    activeCommandIndex = (activeCommandIndex - 1 + items.length) % items.length;
+    renderPaletteResults();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const activeEl = resultsContainer.querySelector('.command-item-active') as HTMLElement;
+    if (activeEl) {
+      activeEl.click();
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    toggleCommandPalette();
+  }
+}
+
+function scrollActivePaletteItemIntoView() {
+  const resultsContainer = document.getElementById('command-palette-results');
+  if (!resultsContainer) return;
+  const activeEl = resultsContainer.querySelector('.command-item-active') as HTMLElement;
+  if (activeEl) {
+    activeEl.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+// 5. Autocomplete Suggestion Helper Functions
+function showAutocompletePopup(textarea: HTMLTextAreaElement) {
+  const popup = document.getElementById('autocomplete-popup');
+  if (!popup) return;
+  popup.classList.remove('hidden');
+  updateAutocompletePopup(textarea);
+}
+
+function hideAutocompletePopup() {
+  const popup = document.getElementById('autocomplete-popup');
+  if (!popup) return;
+  popup.classList.add('hidden');
+  isAutocompleteActive = false;
+}
+
+function updateAutocompletePopup(textarea: HTMLTextAreaElement) {
+  const popup = document.getElementById('autocomplete-popup');
+  if (!popup) return;
+
+  const query = autocompleteQuery.toLowerCase().trim();
+  const matchingPages = wikiPagesList.filter(page => 
+    page.title.toLowerCase().includes(query) || page.slug.toLowerCase().includes(query)
+  );
+
+  if (matchingPages.length === 0) {
+    popup.innerHTML = `<div class="p-2 text-slate-500 italic">No matches found</div>`;
+    return;
+  }
+
+  popup.innerHTML = matchingPages.map((page, idx) => `
+    <div class="editor-autocomplete-item p-2 cursor-pointer transition ${idx === 0 ? 'active bg-teal-950/20 text-teal-400' : 'text-slate-400 hover:bg-slate-900/40 hover:text-slate-200'}" data-slug="${escapeHtml(page.slug)}" data-title="${escapeHtml(page.title)}">
+      <span class="font-bold">${escapeHtml(page.title)}</span>
+      <span class="text-[9px] text-slate-500 block truncate">Slug: ${escapeHtml(page.slug)}</span>
+    </div>
+  `).join('');
+
+  popup.querySelectorAll('.editor-autocomplete-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      const item = e.currentTarget as HTMLElement;
+      const slug = item.getAttribute('data-slug') || '';
+      const title = item.getAttribute('data-title') || '';
+      insertAutocompleteLink(textarea, title, slug);
+    });
+  });
+
+  const coordinates = getCaretCoordinates(textarea, textarea.selectionStart);
+  popup.style.left = `${Math.min(textarea.clientWidth - 260, Math.max(16, coordinates.left))}px`;
+  popup.style.top = `${Math.min(textarea.clientHeight - 100, Math.max(40, coordinates.top + 20))}px`;
+}
+
+function getCaretCoordinates(textarea: HTMLTextAreaElement, position: number) {
+  const text = textarea.value.substring(0, position);
+  const lines = text.split('\n');
+  const currentLineIdx = lines.length - 1;
+  const currentLineText = lines[currentLineIdx];
+  
+  const charWidth = 8;
+  const lineHeight = 20;
+  
+  const left = 16 + (currentLineText.length * charWidth) % (textarea.clientWidth - 40);
+  const top = 12 + currentLineIdx * lineHeight - textarea.scrollTop;
+  
+  return { left, top };
+}
+
+function insertAutocompleteLink(textarea: HTMLTextAreaElement, title: string, slug: string) {
+  const start = autocompleteStartIndex - 2;
+  const end = textarea.selectionStart;
+  const val = textarea.value;
+
+  const linkText = `[${title}](#/page/${slug})`;
+  textarea.value = val.substring(0, start) + linkText + val.substring(end);
+  
+  textarea.focus();
+  textarea.selectionStart = start + linkText.length;
+  textarea.selectionEnd = start + linkText.length;
+  
+  hideAutocompletePopup();
+  
+  const previewBox = document.getElementById('live-preview-box')!;
+  if (previewBox) {
+    previewBox.innerHTML = renderMarkdownSecure(textarea.value);
+  }
+}
+
+// 6. Interactive Checklist Click Handler
+async function toggleMarkdownCheckbox(slug: string, index: number, checked: boolean) {
+  const page = await getPage(slug);
+  if (!page) return;
+
+  let content = page.content;
+  const isEncrypted = !!page.isEncrypted;
+  
+  if (isEncrypted) {
+    if (!activeCryptoKey) {
+      alert('Authentication Error: Decryption key is missing. Re-decrypt page first.');
+      return;
+    }
+    try {
+      content = await decryptText(content, activeCryptoKey);
+    } catch {
+      alert('Decryption failure.');
+      return;
+    }
+  }
+
+  let matchCount = 0;
+  const checkboxRegex = /([-*+]\s+\[)([ xX])(\])/g;
+  
+  const updatedContent = content.replace(checkboxRegex, (match, p1, _p2, p3) => {
+    if (matchCount === index) {
+      matchCount++;
+      return `${p1}${checked ? 'x' : ' '}${p3}`;
+    }
+    matchCount++;
+    return match;
+  });
+
+  let finalContent = updatedContent;
+  if (isEncrypted && activeCryptoKey) {
+    finalContent = await encryptText(updatedContent, activeCryptoKey);
+  }
+
+  page.content = finalContent;
+  page.updatedAt = Date.now();
+
+  await savePage(page);
+  
+  syncChannel.postMessage('refresh');
+  await refreshPagesList();
+  
+  const contentPortal = document.getElementById('main-content')!;
+  if (contentPortal) {
+    await renderPageView(contentPortal);
+  }
+}
+
+// 7. Graph Navigation Map & Link Mechanics
+interface GraphNode {
+  id: string;
+  title: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  isEncrypted: boolean;
+  isSystem: boolean;
+}
+
+interface GraphLink {
+  source: string;
+  target: string;
+}
+
+function extractLinksFromContent(content: string): string[] {
+  const links: string[] = [];
+  const hashLinkRegex = /#\/page\/([a-z0-9-_]+)/g;
+  let match;
+  while ((match = hashLinkRegex.exec(content)) !== null) {
+    links.push(match[1]);
+  }
+  return Array.from(new Set(links));
+}
+
+async function renderGraphView(container: HTMLElement) {
+  container.innerHTML = `
+    <div class="space-y-6">
+      <div class="border-b border-slate-800 pb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h2 class="text-2xl font-bold font-mono text-white uppercase">Tactical Node Relationship Map</h2>
+          <p class="text-xs text-slate-500 font-mono">Interactive force-directed graph visualizing document links and citation clusters.</p>
+        </div>
+        <a href="#/page/home" class="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white self-start sm:self-auto">
+          Back to Dashboard
+        </a>
+      </div>
+
+      <!-- Canvas Panel -->
+      <div class="glass-panel border border-slate-800 rounded-xl p-4 flex flex-col items-center justify-center relative min-h-[500px]">
+        <canvas id="tactical-map-canvas" class="w-full h-[500px] bg-slate-950/40 rounded-lg"></canvas>
+        
+        <!-- Legend Overlay -->
+        <div class="absolute bottom-6 left-6 bg-slate-950/90 border border-slate-800 rounded-lg p-3 space-y-2 text-[10px] font-mono select-none pointer-events-none">
+          <div class="text-xs font-bold text-white mb-1 uppercase tracking-wider">Map Legend</div>
+          <div class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-teal-500 shadow-[0_0_8px_rgba(20,184,166,0.5)]"></span>
+            <span class="text-slate-400">Standard Page</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span>
+            <span class="text-slate-400">System Document</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"></span>
+            <span class="text-slate-400">Encrypted Page</span>
+          </div>
+          <div class="h-px bg-slate-800 my-1"></div>
+          <div class="text-slate-500">Drag to re-arrange nodes. Click to read page.</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const canvas = document.getElementById('tactical-map-canvas') as HTMLCanvasElement;
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d')!;
+  if (!ctx) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = 500 * dpr;
+  ctx.scale(dpr, dpr);
+
+  const width = rect.width;
+  const height = 500;
+
+  const nodes: GraphNode[] = wikiPagesList.map(page => {
+    const x = width / 2 + (Math.random() - 0.5) * 100;
+    const y = height / 2 + (Math.random() - 0.5) * 100;
+    return {
+      id: page.slug,
+      title: page.title,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      radius: page.slug === 'home' ? 14 : 10,
+      isEncrypted: !!page.isEncrypted,
+      isSystem: !!page.isSystem
+    };
+  });
+
+  const links: GraphLink[] = [];
+  const nodeIds = new Set(nodes.map(n => n.id));
+
+  for (const page of wikiPagesList) {
+    let content = page.content;
+    if (page.isEncrypted && activeCryptoKey) {
+      try {
+        content = await decryptText(page.content, activeCryptoKey);
+      } catch {
+        // cipher links ignored
+      }
+    }
+    const targetSlugs = extractLinksFromContent(content);
+    targetSlugs.forEach(target => {
+      if (nodeIds.has(target) && target !== page.slug) {
+        links.push({
+          source: page.slug,
+          target
+        });
+      }
+    });
+  }
+
+  let dragNode: GraphNode | null = null;
+  let hoverNode: GraphNode | null = null;
+  let mouseX = 0;
+  let mouseY = 0;
+  let animationId = 0;
+
+  const kAttract = 0.02;
+  const kRepel = 1200;
+  const friction = 0.85;
+  const gravity = 0.02;
+
+  function stepPhysics() {
+    for (let i = 0; i < nodes.length; i++) {
+      const n1 = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const n2 = nodes[j];
+        const dx = n2.x - n1.x;
+        const dy = n2.y - n1.y;
+        const distSq = dx * dx + dy * dy + 0.1;
+        const dist = Math.sqrt(distSq);
+        if (dist < 250) {
+          const force = kRepel / distSq;
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+          if (n1 !== dragNode) {
+            n1.vx -= fx;
+            n1.vy -= fy;
+          }
+          if (n2 !== dragNode) {
+            n2.vx += fx;
+            n2.vy += fy;
+          }
+        }
+      }
+    }
+
+    links.forEach(link => {
+      const n1 = nodes.find(n => n.id === link.source)!;
+      const n2 = nodes.find(n => n.id === link.target)!;
+      if (!n1 || !n2) return;
+      const dx = n2.x - n1.x;
+      const dy = n2.y - n1.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 0.1;
+      const force = (dist - 100) * kAttract;
+      const fx = (dx / dist) * force;
+      const fy = (dy / dist) * force;
+      if (n1 !== dragNode) {
+        n1.vx += fx;
+        n1.vy += fy;
+      }
+      if (n2 !== dragNode) {
+        n2.vx -= fx;
+        n2.vy -= fy;
+      }
+    });
+
+    nodes.forEach(n => {
+      if (n === dragNode) return;
+      
+      const dx = width / 2 - n.x;
+      const dy = height / 2 - n.y;
+      n.vx += dx * gravity;
+      n.vy += dy * gravity;
+
+      n.x += n.vx;
+      n.y += n.vy;
+
+      n.vx *= friction;
+      n.vy *= friction;
+
+      n.x = Math.max(n.radius, Math.min(width - n.radius, n.x));
+      n.y = Math.max(n.radius, Math.min(height - n.radius, n.y));
+    });
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, width, height);
+
+    ctx.lineWidth = 1;
+    links.forEach(link => {
+      const n1 = nodes.find(n => n.id === link.source)!;
+      const n2 = nodes.find(n => n.id === link.target)!;
+      if (!n1 || !n2) return;
+
+      const isHighlighted = (hoverNode && (hoverNode.id === n1.id || hoverNode.id === n2.id));
+      ctx.strokeStyle = isHighlighted ? 'rgba(20, 184, 166, 0.6)' : 'rgba(30, 41, 59, 0.4)';
+      ctx.lineWidth = isHighlighted ? 1.5 : 1;
+
+      ctx.beginPath();
+      ctx.moveTo(n1.x, n1.y);
+      ctx.lineTo(n2.x, n2.y);
+      ctx.stroke();
+    });
+
+    nodes.forEach(n => {
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.radius, 0, 2 * Math.PI);
+      
+      let fillColor = '#14b8a6';
+      let shadowColor = 'rgba(20, 184, 166, 0.4)';
+      if (n.isEncrypted) {
+        fillColor = '#ef4444';
+        shadowColor = 'rgba(239, 68, 68, 0.4)';
+      } else if (n.isSystem) {
+        fillColor = '#3b82f6';
+        shadowColor = 'rgba(59, 130, 246, 0.4)';
+      }
+
+      ctx.fillStyle = fillColor;
+      ctx.shadowColor = shadowColor;
+      ctx.shadowBlur = hoverNode === n ? 12 : 6;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.fillStyle = hoverNode === n ? '#ffffff' : '#94a3b8';
+      ctx.font = hoverNode === n ? 'bold 10px monospace' : '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(n.title, n.x, n.y - n.radius - 5);
+    });
+  }
+
+  function loop() {
+    stepPhysics();
+    draw();
+    animationId = requestAnimationFrame(loop);
+  }
+
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+
+    if (dragNode) {
+      dragNode.x = mouseX;
+      dragNode.y = mouseY;
+      dragNode.vx = 0;
+      dragNode.vy = 0;
+      return;
+    }
+
+    hoverNode = null;
+    for (const n of nodes) {
+      const dx = n.x - mouseX;
+      const dy = n.y - mouseY;
+      if (dx * dx + dy * dy < (n.radius + 5) * (n.radius + 5)) {
+        hoverNode = n;
+        break;
+      }
+    }
+  });
+
+  canvas.addEventListener('mousedown', () => {
+    if (hoverNode) {
+      dragNode = hoverNode;
+      dragNode.x = mouseX;
+      dragNode.y = mouseY;
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    dragNode = null;
+  });
+
+  canvas.addEventListener('click', () => {
+    if (hoverNode && !dragNode) {
+      cancelAnimationFrame(animationId);
+      window.location.hash = `#/page/${hoverNode.id}`;
+    }
+  });
+
+  loop();
+
+  const cleanUpOnHashChange = () => {
+    cancelAnimationFrame(animationId);
+    window.removeEventListener('hashchange', cleanUpOnHashChange);
+  };
+  window.addEventListener('hashchange', cleanUpOnHashChange);
+}
+
+// 8. Database Health & Link Checker Diagnostics
+async function runDatabaseDiagnostics(container: HTMLElement) {
+  container.innerHTML = `
+    <div class="text-xs font-mono text-slate-500 animate-pulse">Running security & link integrity scan...</div>
+  `;
+
+  const pages = await getAllPages();
+  
+  let totalBytes = 0;
+  const encoder = new TextEncoder();
+  pages.forEach(p => {
+    const pageStr = JSON.stringify(p);
+    totalBytes += encoder.encode(pageStr).length;
+  });
+
+  const sizeFormatted = totalBytes < 1024 
+    ? `${totalBytes} Bytes`
+    : totalBytes < 1024 * 1024
+      ? `${(totalBytes / 1024).toFixed(2)} KB`
+      : `${(totalBytes / (1024 * 1024)).toFixed(2)} MB`;
+
+  const pageSlugs = new Set(pages.map(p => p.slug));
+  const incomingLinks: { [slug: string]: string[] } = {};
+  
+  pages.forEach(p => {
+    incomingLinks[p.slug] = [];
+  });
+
+  const brokenLinks: { source: string; target: string }[] = [];
+
+  for (const page of pages) {
+    let content = page.content;
+    if (page.isEncrypted && activeCryptoKey) {
+      try {
+        content = await decryptText(page.content, activeCryptoKey);
+      } catch {
+        // encrypted contents ignored
+      }
+    }
+    const targets = extractLinksFromContent(content);
+    targets.forEach(target => {
+      if (pageSlugs.has(target)) {
+        if (target !== page.slug) {
+          incomingLinks[target].push(page.slug);
+        }
+      } else {
+        brokenLinks.push({ source: page.slug, target });
+      }
+    });
+  }
+
+  const orphanPages = pages.filter(p => p.slug !== 'home' && incomingLinks[p.slug].length === 0);
+
+  container.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl p-5 space-y-4 font-mono text-xs">
+      <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider border-b border-slate-800 pb-2">Database Integrity Report</h3>
+      
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-slate-950/50 border border-slate-850 p-3 rounded-lg text-center">
+          <div class="text-[10px] text-slate-500 font-mono uppercase">Total Database Footprint</div>
+          <div class="text-base font-bold text-teal-400 font-mono mt-1">${sizeFormatted}</div>
+        </div>
+        <div class="bg-slate-950/50 border border-slate-850 p-3 rounded-lg text-center">
+          <div class="text-[10px] text-slate-500 font-mono uppercase">Broken Reference Citations</div>
+          <div class="text-base font-bold font-mono mt-1 ${brokenLinks.length > 0 ? 'text-red-400 animate-pulse' : 'text-emerald-400'}">${brokenLinks.length}</div>
+        </div>
+        <div class="bg-slate-950/50 border border-slate-850 p-3 rounded-lg text-center">
+          <div class="text-[10px] text-slate-500 font-mono uppercase">Orphaned Intel Documents</div>
+          <div class="text-base font-bold font-mono mt-1 ${orphanPages.length > 0 ? 'text-amber-500' : 'text-emerald-400'}">${orphanPages.length}</div>
+        </div>
+      </div>
+
+      <!-- Details -->
+      <div class="space-y-3 pt-2 text-xs font-mono">
+        <!-- Broken Links Details -->
+        <div>
+          <span class="text-slate-400 font-bold uppercase block mb-1">Broken Links Analysis:</span>
+          ${brokenLinks.length === 0 ? `
+            <span class="text-emerald-400 text-[10px]">✓ All internal page link references verified intact.</span>
+          ` : `
+            <div class="max-h-24 overflow-y-auto space-y-1 pr-1">
+              ${brokenLinks.map(link => `
+                <div class="text-[10px] text-red-400/80">📄 [${escapeHtml(link.source)}] references non-existent [${escapeHtml(link.target)}]</div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+
+        <!-- Orphan Details -->
+        <div>
+          <span class="text-slate-400 font-bold uppercase block mb-1">Orphaned Documents (No incoming links):</span>
+          ${orphanPages.length === 0 ? `
+            <span class="text-emerald-400 text-[10px]">✓ All custom documents linked to operational flows.</span>
+          ` : `
+            <div class="max-h-24 overflow-y-auto space-y-1 pr-1">
+              ${orphanPages.map(p => `
+                <div class="text-[10px] text-amber-500/80">📄 [${escapeHtml(p.title)}] (slug: ${escapeHtml(p.slug)}) has zero citations</div>
+              `).join('')}
+            </div>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // Kickstart App on Content Loaded
