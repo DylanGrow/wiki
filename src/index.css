@@ -1,0 +1,329 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-bg-base: #090d16;
+    --color-bg-surface: #0f172a;
+    --color-bg-glass: rgba(15, 23, 42, 0.7);
+    --color-border-glow: rgba(20, 184, 166, 0.2);
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  }
+
+  body {
+    background-color: var(--color-bg-base);
+    color: #e2e8f0;
+    font-family: var(--font-sans);
+    overflow-x: hidden;
+  }
+
+  /* Clickjacking Protection Base state */
+  html.clickjack-lock body {
+    display: none !important;
+  }
+
+  /* Accessibility focus ring styling */
+  *:focus-visible {
+    outline: 2px solid #14b8a6 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.25) !important;
+  }
+
+  /* Custom Scrollbar for premium dark feel */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #090d16;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1e293b;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #0d9488;
+  }
+}
+
+/* Custom premium glow effects and animations */
+.glow-border {
+  border: 1px solid rgba(20, 184, 166, 0.15);
+  box-shadow: 0 0 15px rgba(20, 184, 166, 0.05);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glow-border:hover {
+  border-color: rgba(20, 184, 166, 0.4);
+  box-shadow: 0 0 20px rgba(20, 184, 166, 0.15);
+}
+
+.glow-text-emerald {
+  text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+}
+
+.glow-text-cyan {
+  text-shadow: 0 0 10px rgba(6, 182, 212, 0.5);
+}
+
+.glass-panel {
+  background: var(--color-bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.pulse-indicator {
+  animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Markdown styling overrides for wiki display */
+.wiki-content h1 {
+  font-size: 1.75rem;
+  font-weight: 800;
+  margin-top: 1.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 0.5rem;
+  color: #f8fafc;
+}
+@media (min-width: 768px) {
+  .wiki-content h1 {
+    font-size: 2.25rem;
+  }
+}
+
+.wiki-content h2 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  color: #f8fafc;
+}
+@media (min-width: 768px) {
+  .wiki-content h2 {
+    font-size: 1.5rem;
+  }
+}
+
+.wiki-content h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+  color: #f1f5f9;
+}
+@media (min-width: 768px) {
+  .wiki-content h3 {
+    font-size: 1.25rem;
+  }
+}
+
+.wiki-content p {
+  font-size: 0.95rem;
+  margin-bottom: 1rem;
+  line-height: 1.7;
+  color: #cbd5e1;
+}
+@media (min-width: 768px) {
+  .wiki-content p {
+    font-size: 1rem;
+  }
+}
+
+.wiki-content ul {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.wiki-content ol {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.wiki-content li {
+  margin-bottom: 0.25rem;
+  color: #cbd5e1;
+}
+
+.wiki-content blockquote {
+  border-left: 4px solid #0d9488;
+  padding-left: 1rem;
+  margin-left: 0;
+  margin-right: 0;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  font-style: italic;
+  color: #94a3b8;
+  background-color: rgba(13, 148, 136, 0.05);
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+.wiki-content pre {
+  background-color: #020617;
+  border: 1px solid #1e293b;
+  border-radius: 0.375rem;
+  padding: 1rem;
+  overflow-x: auto;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
+.wiki-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875em;
+  background-color: #1e293b;
+  color: #38bdf8;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem;
+}
+
+.wiki-content pre code {
+  background-color: transparent;
+  color: #e2e8f0;
+  padding: 0;
+  border-radius: 0;
+}
+
+.wiki-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
+.wiki-content th, .wiki-content td {
+  border: 1px solid #1e293b;
+  padding: 0.75rem;
+  text-align: left;
+}
+
+.wiki-content th {
+  background-color: #0f172a;
+  color: #f8fafc;
+}
+
+.wiki-content tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Office Light Theme overrides */
+html.light-theme {
+  --color-bg-base: #f1f5f9;
+  --color-bg-surface: #ffffff;
+  --color-bg-glass: rgba(255, 255, 255, 0.85);
+  --color-border-glow: rgba(13, 148, 136, 0.2);
+}
+
+html.light-theme body {
+  background-color: var(--color-bg-base);
+  color: #1e293b;
+}
+
+html.light-theme .glass-panel {
+  background: var(--color-bg-glass);
+  border-color: rgba(13, 148, 136, 0.15);
+}
+
+html.light-theme header h1, 
+html.light-theme aside span,
+html.light-theme aside a span,
+html.light-theme .wiki-content h1,
+html.light-theme .wiki-content h2,
+html.light-theme .wiki-content h3 {
+  color: #0f172a !important;
+}
+
+html.light-theme .wiki-content p,
+html.light-theme .wiki-content li {
+  color: #334155;
+}
+
+html.light-theme .wiki-content pre {
+  background-color: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+html.light-theme .wiki-content code {
+  background-color: #e2e8f0;
+  color: #0f766e;
+}
+
+html.light-theme .wiki-content pre code {
+  color: #0f172a;
+}
+
+html.light-theme .wiki-content blockquote {
+  background-color: rgba(13, 148, 136, 0.03);
+  color: #475569;
+}
+
+html.light-theme input,
+html.light-theme textarea {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html.light-theme input::placeholder,
+html.light-theme textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Printer-Friendly layout styling */
+@media print {
+  header,
+  aside,
+  button,
+  .flex-1 > aside,
+  #sidebar-backdrop,
+  #idle-lock-screen,
+  #system-panic-btn,
+  #pwa-install-btn,
+  .flex.items-center.gap-2,
+  .flex.items-center.gap-3 button,
+  .flex.items-center.gap-2 button,
+  a[href^="#/edit/"],
+  a[href="#/system"],
+  form div.flex.justify-end {
+    display: none !important;
+  }
+  
+  body, html, #app, .flex-1, main {
+    background: white !important;
+    color: black !important;
+    height: auto !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+  
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+  }
+  
+  .wiki-content {
+    color: black !important;
+  }
+  
+  .wiki-content h1,
+  .wiki-content h2,
+  .wiki-content h3 {
+    color: black !important;
+    page-break-after: avoid;
+  }
+  
+  .wiki-content p, 
+  .wiki-content ul, 
+  .wiki-content ol {
+    color: #222 !important;
+  }
+}

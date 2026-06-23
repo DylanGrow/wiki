@@ -1,0 +1,24 @@
+{
+  "name": "wiki",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "dompurify": "^3.1.5",
+    "idb-keyval": "^6.2.1",
+    "marked": "^12.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0-alpha.18",
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "^26.0.0",
+    "tailwindcss": "^4.0.0-alpha.18",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  }
+}
