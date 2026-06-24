@@ -7,8 +7,7 @@
   <meta name="description" content="Offline-first, government-grade secure operations wiki. Monitored knowledge base with zero remote telemetry.">
   <meta name="referrer" content="no-referrer">
   
-  <!-- Clickjacking Protection Shield -->
-  <script type="module" src="/src/anti-clickjack.ts"></script>
+  <!-- Clickjacking Protection Shield -->
   
   <!-- Security Headers (Client-Side CSP Enforcement) -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; manifest-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self';">
@@ -51,6 +50,7 @@
       padding: 2rem;
     }
   </style>
+  <script type="module" crossorigin src="/wiki/assets/main-BbzmqEY5.js"></script>
 </head>
 <body class="h-full bg-[#090d16] text-slate-100 flex flex-col antialiased select-none">
   <!-- Core SPA Mounting Container -->
@@ -79,7 +79,6 @@
     </noscript>
   </div>
 
-  <!-- Primary Application Script -->
-  <script type="module" src="/src/main.ts"></script>
+  <!-- Primary Application Script -->
 </body>
 </html>
