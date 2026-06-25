@@ -21,6 +21,32 @@ let isAutocompleteActive = false;
 let autocompleteStartIndex = -1;
 let autocompleteQuery = '';
 
+let inactivityTimeoutId: any = null;
+
+function resetInactivityTimeout() {
+  if (inactivityTimeoutId) {
+    clearTimeout(inactivityTimeoutId);
+  }
+  // 15 minutes = 900,000 ms
+  inactivityTimeoutId = setTimeout(() => {
+    if (activeCryptoKey) {
+      activeCryptoKey = null;
+      alert('SECURITY TIMEOUT: Session idle for 15 minutes. Passphrase keys wiped from memory.');
+      if (window.location.hash.startsWith('#/page/')) {
+        window.location.hash = '#/page/home';
+      } else {
+        renderLayout();
+      }
+    }
+  }, 15 * 60 * 1000);
+}
+
+// Bind session activity listeners
+['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart'].forEach(eventName => {
+  window.addEventListener(eventName, resetInactivityTimeout, { passive: true });
+});
+resetInactivityTimeout();
+
 function applyTheme() {
   const html = document.documentElement;
   const path = document.getElementById('theme-icon-path');
@@ -673,24 +699,26 @@ async function renderLayout() {
 
   // Bind Event Listeners
   const searchInput = document.getElementById('wiki-search-input') as HTMLInputElement;
-  searchInput.addEventListener('input', (e) => {
-    searchQuery = (e.target as HTMLInputElement).value;
-    // Trigger dynamic sidebar filter only, preventing whole page redraw to preserve input focus
-    const filtered = wikiPagesList.filter(page => 
-      page.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      page.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      page.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()))
-    );
-    const pagesListContainer = document.getElementById('pages-list')!;
-    pagesListContainer.innerHTML = filtered.map(page => `
-      <a href="#/page/${page.slug}" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm transition group ${currentPageSlug === page.slug && !isEditing ? 'bg-teal-950/30 text-teal-400 font-medium border-l-2 border-teal-500' : 'text-slate-400 hover:bg-slate-900/50 hover:text-slate-200'}">
-        <span class="truncate font-mono">${escapeHtml(page.title)}</span>
-        ${page.isSystem ? `
-          <span class="text-[9px] bg-slate-800 text-slate-400 px-1 py-0.5 rounded font-mono uppercase scale-90">SYS</span>
-        ` : ''}
-      </a>
-    `).join('');
-  });
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      searchQuery = (e.target as HTMLInputElement).value;
+      // Trigger dynamic sidebar filter only, preventing whole page redraw to preserve input focus
+      const filtered = wikiPagesList.filter(page => 
+        page.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        page.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        page.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()))
+      );
+      const pagesListContainer = document.getElementById('pages-list')!;
+      pagesListContainer.innerHTML = filtered.map(page => `
+        <a href="#/page/${page.slug}" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm transition group ${currentPageSlug === page.slug && !isEditing ? 'bg-teal-950/30 text-teal-400 font-medium border-l-2 border-teal-500' : 'text-slate-400 hover:bg-slate-900/50 hover:text-slate-200'}">
+          <span class="truncate font-mono">${escapeHtml(page.title)}</span>
+          ${page.isSystem ? `
+            <span class="text-[9px] bg-slate-800 text-slate-400 px-1 py-0.5 rounded font-mono uppercase scale-90">SYS</span>
+          ` : ''}
+        </a>
+      `).join('');
+    });
+  }
 
   const installBtn = document.getElementById('pwa-install-btn');
   if (installBtn) {
@@ -1566,9 +1594,16 @@ async function renderEditView(container: HTMLElement) {
     }
   }, 5000);
 
+  const cleanUpOnHashChange = () => {
+    clearInterval(autoSaveInterval);
+    window.removeEventListener('hashchange', cleanUpOnHashChange);
+  };
+  window.addEventListener('hashchange', cleanUpOnHashChange);
+
   // Clean draft utility
   const cleanUpDraft = () => {
     clearInterval(autoSaveInterval);
+    window.removeEventListener('hashchange', cleanUpOnHashChange);
     localStorage.removeItem(draftKey);
     hideAutocompletePopup();
   };
@@ -1601,7 +1636,7 @@ async function renderEditView(container: HTMLElement) {
 
     const tags = rawTags
       .split(',')
-      .map(tag => sanitizeUnicode(tag.trim()))
+      .map(tag => sanitizeUnicode(tag.trim()).toLowerCase())
       .filter(tag => tag.length > 0);
 
     // Save previous state as revision history before saving new page (if page already exists)
@@ -1732,7 +1767,7 @@ function generateConsolidatedHTML(pages: WikiPage[]): string {
       <section style="page-break-after: always; margin-bottom: 3rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 2rem;">
         <h1 style="font-size: 2.25rem; font-family: monospace; margin-bottom: 0.5rem; color: #1a202c;">${escapeHtml(page.title)}</h1>
         <div style="font-size: 0.75rem; color: #718096; font-family: monospace; margin-bottom: 1.5rem;">
-          SLUG: ${page.slug} | TAGS: #${page.tags.join(', #')} | UPDATED: ${new Date(page.updatedAt).toLocaleString()}
+          SLUG: ${page.slug} | TAGS: #${page.tags.map(t => escapeHtml(t)).join(', #')} | UPDATED: ${new Date(page.updatedAt).toLocaleString()}
         </div>
         <div style="line-height: 1.6; color: #2d3748;">
           ${rendered}
@@ -1847,7 +1882,7 @@ function generateStaticWikiZip(pages: WikiPage[]): Blob {
         <div class="page-card">
           <a class="page-title" href="${p.slug}.html">${escapeHtml(p.title)}</a>
           <div class="metadata">
-            SLUG: ${p.slug} | TAGS: #${p.tags.join(', #')} | UPDATED: ${new Date(p.updatedAt).toLocaleString()}
+            SLUG: ${p.slug} | TAGS: #${p.tags.map(t => escapeHtml(t)).join(', #')} | UPDATED: ${new Date(p.updatedAt).toLocaleString()}
           </div>
         </div>
       `).join('')}
@@ -2809,20 +2844,34 @@ encrypted: ${!!page.isEncrypted}
 
   // Hard reset database handler
   resetBtn.addEventListener('click', async () => {
-    if (confirm('CRITICAL WARPING WARNING: Reset and delete ALL wiki pages? Custom user documents will be permanently deleted.')) {
+    const confirmation = prompt('CRITICAL SECURITY WARNING: Type "WIPE" to verify you want to delete ALL wiki pages and custom documents:');
+    if (confirmation === 'WIPE') {
       const request = indexedDB.open('secops-wiki-db', 2);
       request.onsuccess = async () => {
         const db = request.result;
         const transaction = db.transaction('pages', 'readwrite');
         const store = transaction.objectStore('pages');
         store.clear().onsuccess = async () => {
+          // Clear SW Cache (Fix 4)
+          if ('caches' in window) {
+            try {
+              const cacheNames = await caches.keys();
+              for (const name of cacheNames) {
+                await caches.delete(name);
+              }
+            } catch (err) {
+              console.warn('Failed to clear caches: ', err);
+            }
+          }
           await seedDatabase();
-          alert('Database successfully wiped and seeded with standard operating defaults.');
+          alert('Database successfully wiped, caches invalidated, and seeded with standard operating defaults.');
           syncChannel.postMessage('refresh');
           await refreshPagesList();
           window.location.hash = '#/page/home';
         };
       };
+    } else if (confirmation !== null) {
+      alert('Sanitization aborted. Confirmation keyword mismatch.');
     }
   });
 }
@@ -2977,7 +3026,7 @@ function renderPaletteResults() {
           <span class="text-base">${page.isEncrypted ? '🔒' : '📄'}</span>
           <div>
             <div class="font-bold text-white">${escapeHtml(page.title)}</div>
-            <div class="text-[10px] text-slate-500">Slug: ${escapeHtml(page.slug)} ${page.tags.length ? `• tags: #${page.tags.join(', #')}` : ''}</div>
+            <div class="text-[10px] text-slate-500">Slug: ${escapeHtml(page.slug)} ${page.tags.length ? `• tags: #${page.tags.map(t => escapeHtml(t)).join(', #')}` : ''}</div>
           </div>
         </div>
         <span class="text-[10px] text-slate-650 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-900 uppercase">PAGE</span>
@@ -3208,10 +3257,10 @@ interface GraphLink {
 
 function extractLinksFromContent(content: string): string[] {
   const links: string[] = [];
-  const hashLinkRegex = /#\/page\/([a-z0-9-_]+)/g;
+  const hashLinkRegex = /(?:\(|"|^|\s)#\/page\/([a-z0-9-_]+)/g;
   let match;
   while ((match = hashLinkRegex.exec(content)) !== null) {
-    links.push(match[1]);
+    links.push(match[1].toLowerCase());
   }
   return Array.from(new Set(links));
 }
@@ -3233,6 +3282,13 @@ async function renderGraphView(container: HTMLElement) {
       <div class="glass-panel border border-slate-800 rounded-xl p-4 flex flex-col items-center justify-center relative min-h-[500px]">
         <canvas id="tactical-map-canvas" class="w-full h-[500px] bg-slate-950/40 rounded-lg"></canvas>
         
+        <!-- Controls Overlay -->
+        <div class="absolute top-6 right-6 flex flex-col gap-2 z-10 select-none">
+          <button id="map-zoom-in" title="Zoom In" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 font-bold rounded shadow transition focus:outline-none">＋</button>
+          <button id="map-zoom-out" title="Zoom Out" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 font-bold rounded shadow transition focus:outline-none">－</button>
+          <button id="map-zoom-reset" title="Reset View" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 text-[10px] font-mono rounded shadow transition focus:outline-none uppercase">RST</button>
+        </div>
+
         <!-- Legend Overlay -->
         <div class="absolute bottom-6 left-6 bg-slate-950/90 border border-slate-800 rounded-lg p-3 space-y-2 text-[10px] font-mono select-none pointer-events-none">
           <div class="text-xs font-bold text-white mb-1 uppercase tracking-wider">Map Legend</div>
@@ -3249,7 +3305,7 @@ async function renderGraphView(container: HTMLElement) {
             <span class="text-slate-400">Encrypted Page</span>
           </div>
           <div class="h-px bg-slate-800 my-1"></div>
-          <div class="text-slate-500">Drag to re-arrange nodes. Click to read page.</div>
+          <div class="text-slate-500">Drag nodes or scroll to zoom. Drag background to pan.</div>
         </div>
       </div>
     </div>
@@ -3269,6 +3325,14 @@ async function renderGraphView(container: HTMLElement) {
 
   const width = rect.width;
   const height = 500;
+
+  // Viewport transforms
+  let zoom = 1.0;
+  let panX = 0;
+  let panY = 0;
+  let isPanning = false;
+  let startPanX = 0;
+  let startPanY = 0;
 
   const nodes: GraphNode[] = wikiPagesList.map(page => {
     const x = width / 2 + (Math.random() - 0.5) * 100;
@@ -3319,6 +3383,13 @@ async function renderGraphView(container: HTMLElement) {
   const kRepel = 1200;
   const friction = 0.85;
   const gravity = 0.02;
+
+  // Coordinates translation utility
+  function screenToCanvas(sx: number, sy: number) {
+    const cx = (sx - width / 2 - panX) / zoom + width / 2;
+    const cy = (sy - height / 2 - panY) / zoom + height / 2;
+    return { x: cx, y: cy };
+  }
 
   function stepPhysics() {
     for (let i = 0; i < nodes.length; i++) {
@@ -3387,6 +3458,12 @@ async function renderGraphView(container: HTMLElement) {
   function draw() {
     ctx.clearRect(0, 0, width, height);
 
+    ctx.save();
+    // Apply viewport scale and translations relative to center
+    ctx.translate(width / 2 + panX, height / 2 + panY);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-width / 2, -height / 2);
+
     ctx.lineWidth = 1;
     links.forEach(link => {
       const n1 = nodes.find(n => n.id === link.source)!;
@@ -3395,7 +3472,7 @@ async function renderGraphView(container: HTMLElement) {
 
       const isHighlighted = (hoverNode && (hoverNode.id === n1.id || hoverNode.id === n2.id));
       ctx.strokeStyle = isHighlighted ? 'rgba(20, 184, 166, 0.6)' : 'rgba(30, 41, 59, 0.4)';
-      ctx.lineWidth = isHighlighted ? 1.5 : 1;
+      ctx.lineWidth = isHighlighted ? 1.5 / zoom : 1 / zoom;
 
       ctx.beginPath();
       ctx.moveTo(n1.x, n1.y);
@@ -3424,14 +3501,16 @@ async function renderGraphView(container: HTMLElement) {
       ctx.shadowBlur = 0;
 
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 / zoom;
       ctx.stroke();
 
       ctx.fillStyle = hoverNode === n ? '#ffffff' : '#94a3b8';
-      ctx.font = hoverNode === n ? 'bold 10px monospace' : '9px monospace';
+      ctx.font = hoverNode === n ? `bold ${10 / zoom}px monospace` : `${9 / zoom}px monospace`;
       ctx.textAlign = 'center';
-      ctx.fillText(n.title, n.x, n.y - n.radius - 5);
+      ctx.fillText(n.title, n.x, n.y - n.radius - (5 / zoom));
     });
+
+    ctx.restore();
   }
 
   function loop() {
@@ -3442,14 +3521,24 @@ async function renderGraphView(container: HTMLElement) {
 
   canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
-    mouseX = e.clientX - rect.left;
-    mouseY = e.clientY - rect.top;
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    const canvasMouse = screenToCanvas(sx, sy);
+    mouseX = canvasMouse.x;
+    mouseY = canvasMouse.y;
 
     if (dragNode) {
       dragNode.x = mouseX;
       dragNode.y = mouseY;
       dragNode.vx = 0;
       dragNode.vy = 0;
+      return;
+    }
+
+    if (isPanning) {
+      panX = sx - startPanX;
+      panY = sy - startPanY;
       return;
     }
 
@@ -3464,24 +3553,65 @@ async function renderGraphView(container: HTMLElement) {
     }
   });
 
-  canvas.addEventListener('mousedown', () => {
+  canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
     if (hoverNode) {
       dragNode = hoverNode;
-      dragNode.x = mouseX;
-      dragNode.y = mouseY;
+      const canvasMouse = screenToCanvas(sx, sy);
+      dragNode.x = canvasMouse.x;
+      dragNode.y = canvasMouse.y;
+    } else {
+      isPanning = true;
+      startPanX = sx - panX;
+      startPanY = sy - panY;
     }
   });
 
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    const mouseBefore = screenToCanvas(sx, sy);
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    zoom = Math.max(0.2, Math.min(4.0, zoom * zoomFactor));
+
+    panX = sx - (mouseBefore.x - width / 2) * zoom - width / 2;
+    panY = sy - (mouseBefore.y - height / 2) * zoom - height / 2;
+  }, { passive: false });
+
   const handleMouseUp = () => {
     dragNode = null;
+    isPanning = false;
   };
   window.addEventListener('mouseup', handleMouseUp);
 
   canvas.addEventListener('click', () => {
-    if (hoverNode && !dragNode) {
+    if (hoverNode && !isPanning) {
       cancelAnimationFrame(animationId);
       window.location.hash = `#/page/${hoverNode.id}`;
     }
+  });
+
+  // Bind Overlay Controls
+  const btnZoomIn = document.getElementById('map-zoom-in')!;
+  const btnZoomOut = document.getElementById('map-zoom-out')!;
+  const btnReset = document.getElementById('map-zoom-reset')!;
+
+  btnZoomIn.addEventListener('click', () => {
+    zoom = Math.min(4.0, zoom * 1.2);
+  });
+  btnZoomOut.addEventListener('click', () => {
+    zoom = Math.max(0.2, zoom / 1.2);
+  });
+  btnReset.addEventListener('click', () => {
+    zoom = 1.0;
+    panX = 0;
+    panY = 0;
   });
 
   loop();
