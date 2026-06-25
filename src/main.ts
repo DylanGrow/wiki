@@ -1,5 +1,6 @@
 import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, saveRevision, getPageRevisions } from './db';
 import { renderMarkdownSecure, validateImportedPage, escapeHtml, getSanitizationCount, sanitizeUnicode, deriveKey, encryptText, decryptText } from './security';
+import './index.css';
 
 // State Management
 let currentPageSlug = 'home';
@@ -320,6 +321,36 @@ function setupIdleTracker() {
   });
 }
 
+function showUpdateToast() {
+  if (document.getElementById('pwa-update-toast')) return;
+
+  const toast = document.createElement('div');
+  toast.id = 'pwa-update-toast';
+  toast.className = 'fixed bottom-4 right-4 z-50 max-w-sm glass-panel border border-teal-500/30 p-4 rounded-xl shadow-2xl glow-border flex items-center justify-between gap-4 font-mono text-xs select-none';
+  toast.innerHTML = `
+    <div class="flex items-center gap-2 text-teal-400">
+      <svg class="w-5 h-5 text-teal-400 animate-bounce shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+      </svg>
+      <div>
+        <div class="font-bold text-white uppercase">UPDATE_INGESTED</div>
+        <div class="text-[10px] text-slate-500">Restart session to apply updates.</div>
+      </div>
+    </div>
+    <button id="pwa-update-reload-btn" class="px-3 py-1.5 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-bold rounded shadow-[0_0_8px_rgba(20,184,166,0.2)] transition uppercase text-[10px] shrink-0">
+      RESTART
+    </button>
+  `;
+  document.body.appendChild(toast);
+
+  const btn = document.getElementById('pwa-update-reload-btn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      window.location.reload();
+    });
+  }
+}
+
 // Service Worker Registration
 function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
@@ -328,6 +359,23 @@ function registerServiceWorker() {
       navigator.serviceWorker.register('/wiki/sw.js')
         .then((registration) => {
           console.log('ServiceWorker registered successfully with scope: ', registration.scope);
+          
+          // Check if there's already an updated worker waiting
+          if (registration.waiting) {
+            showUpdateToast();
+          }
+
+          // Check for future updates
+          registration.addEventListener('updatefound', () => {
+            const installingWorker = registration.installing;
+            if (installingWorker) {
+              installingWorker.addEventListener('statechange', () => {
+                if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  showUpdateToast();
+                }
+              });
+            }
+          });
         })
         .catch((err) => {
           console.error('ServiceWorker registration failed: ', err);
@@ -2282,9 +2330,10 @@ async function renderGraphView(container: HTMLElement) {
     }
   });
 
-  window.addEventListener('mouseup', () => {
+  const handleMouseUp = () => {
     dragNode = null;
-  });
+  };
+  window.addEventListener('mouseup', handleMouseUp);
 
   canvas.addEventListener('click', () => {
     if (hoverNode && !dragNode) {
@@ -2297,6 +2346,7 @@ async function renderGraphView(container: HTMLElement) {
 
   const cleanUpOnHashChange = () => {
     cancelAnimationFrame(animationId);
+    window.removeEventListener('mouseup', handleMouseUp);
     window.removeEventListener('hashchange', cleanUpOnHashChange);
   };
   window.addEventListener('hashchange', cleanUpOnHashChange);

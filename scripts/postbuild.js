@@ -16,7 +16,45 @@ if (fs.existsSync(sourceHtml)) {
   console.warn('Warning: dist/index.source.html not found.');
 }
 
-// 2. Copy files from dist to root
+// 2. Update sw.js with hashed assets before copying it
+const swPath = path.join(distDir, 'sw.js');
+const srcAssets = path.join(distDir, 'assets');
+if (fs.existsSync(swPath)) {
+  let swContent = fs.readFileSync(swPath, 'utf8');
+  
+  // Find all files in assets directory
+  let assetFiles = [];
+  if (fs.existsSync(srcAssets)) {
+    assetFiles = fs.readdirSync(srcAssets);
+  }
+  
+  // Form the list of asset URLs for Service Worker caching (respecting subfolder base '/wiki/')
+  const swAssetUrls = assetFiles.map(file => `"/wiki/assets/${file}"`);
+  
+  const searchStr = '["/wiki/","/wiki/index.html","/wiki/manifest.json","/wiki/icon.svg"]';
+  if (swContent.includes(searchStr)) {
+    const replacementStr = `["/wiki/","/wiki/index.html","/wiki/manifest.json","/wiki/icon.svg",${swAssetUrls.join(',')}]`;
+    swContent = swContent.replace(searchStr, replacementStr);
+    fs.writeFileSync(swPath, swContent, 'utf8');
+    console.log('sw.js updated with hashed assets successfully!');
+  } else {
+    console.warn('Warning: Could not find ASSETS array in compiled sw.js');
+  }
+}
+
+// 3. Clear existing assets in the root directory to avoid cluttering with old hashes
+const destAssets = path.join(rootDir, 'assets');
+if (fs.existsSync(destAssets)) {
+  const oldAssets = fs.readdirSync(destAssets);
+  for (const file of oldAssets) {
+    fs.unlinkSync(path.join(destAssets, file));
+  }
+  console.log('Cleared old assets from root assets/ directory.');
+} else {
+  fs.mkdirSync(destAssets, { recursive: true });
+}
+
+// 4. Copy files from dist to root
 const filesToCopy = [
   'index.html',
   'sw.js',
@@ -36,14 +74,8 @@ for (const file of filesToCopy) {
   }
 }
 
-// 3. Copy assets directory recursively
-const srcAssets = path.join(distDir, 'assets');
-const destAssets = path.join(rootDir, 'assets');
-
+// 5. Copy assets directory recursively
 if (fs.existsSync(srcAssets)) {
-  if (!fs.existsSync(destAssets)) {
-    fs.mkdirSync(destAssets, { recursive: true });
-  }
   const assets = fs.readdirSync(srcAssets);
   for (const asset of assets) {
     fs.copyFileSync(path.join(srcAssets, asset), path.join(destAssets, asset));
