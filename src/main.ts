@@ -450,6 +450,67 @@ async function handleRoute() {
   }
 }
 
+function renderSidebarPages(pages: WikiPage[]): string {
+  const systemPages = pages.filter(p => p.isSystem);
+  const encryptedPages = pages.filter(p => !p.isSystem && p.isEncrypted);
+  const standardPages = pages.filter(p => !p.isSystem && !p.isEncrypted);
+
+  let html = '';
+
+  if (systemPages.length > 0) {
+    html += `
+      <div class="mb-4">
+        <div class="px-3 mb-1.5 text-[9px] font-bold text-slate-500 uppercase tracking-widest font-mono flex items-center gap-1 select-none">
+          ⚙️ SYSTEM PROCEDURES
+        </div>
+        <div class="space-y-0.5">
+          ${systemPages.map(p => renderPageLink(p)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  if (encryptedPages.length > 0) {
+    html += `
+      <div class="mb-4">
+        <div class="px-3 mb-1.5 text-[9px] font-bold text-red-400/80 uppercase tracking-widest font-mono flex items-center gap-1 select-none">
+          🔒 SECURE CORES
+        </div>
+        <div class="space-y-0.5">
+          ${encryptedPages.map(p => renderPageLink(p)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  if (standardPages.length > 0) {
+    html += `
+      <div class="mb-4">
+        <div class="px-3 mb-1.5 text-[9px] font-bold text-teal-400/80 uppercase tracking-widest font-mono flex items-center gap-1 select-none">
+          📄 OPERATIONAL INTEL
+        </div>
+        <div class="space-y-0.5">
+          ${standardPages.map(p => renderPageLink(p)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  return html;
+}
+
+function renderPageLink(page: WikiPage): string {
+  const isActive = currentPageSlug === page.slug && !isEditing;
+  return `
+    <a href="#/page/${page.slug}" class="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-mono transition group ${isActive ? 'bg-teal-950/30 text-teal-400 font-bold border-l-2 border-teal-500' : 'text-slate-450 hover:bg-slate-900/40 hover:text-slate-200'}">
+      <span class="truncate flex items-center gap-1.5">
+        ${page.isEncrypted ? '<span class="text-red-450 text-[9px]">🔒</span>' : '<span class="text-slate-650 group-hover:text-slate-500 text-[9px]">⊙</span>'}
+        ${escapeHtml(page.title)}
+      </span>
+    </a>
+  `;
+}
+
 // Layout Renderer
 async function renderLayout() {
   await refreshPagesList();
@@ -535,15 +596,18 @@ async function renderLayout() {
 
       <!-- Left Navigation Drawer -->
       <aside id="sidebar" class="fixed inset-y-0 left-0 z-30 w-72 glass-panel border-r border-slate-800/80 flex flex-col shrink-0 transform -translate-x-full md:translate-x-0 md:static transition-transform duration-300 ease-in-out">
-        <!-- Search -->
+        <!-- Search Launcher -->
         <div class="p-4 border-b border-slate-800/80 shrink-0">
-          <div class="relative">
-            <input type="text" id="wiki-search-input" value="${escapeHtml(searchQuery)}" placeholder="Search index database..." class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg py-2 pl-9 pr-4 text-base md:text-sm text-slate-200 placeholder-slate-500 focus:outline-none transition font-mono">
-            <svg class="w-4 h-4 text-slate-500 absolute left-3 top-2.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <circle cx="11" cy="11" r="8"/>
-              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-            </svg>
-          </div>
+          <button id="sidebar-search-trigger" class="w-full bg-slate-950/80 border border-slate-800 hover:border-slate-700/80 hover:bg-slate-900/20 rounded-lg py-2.5 px-3 flex items-center justify-between text-slate-500 transition font-mono focus:outline-none cursor-pointer">
+            <div class="flex items-center gap-2 font-mono">
+              <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <span class="text-xs text-slate-450">Search database...</span>
+            </div>
+            <kbd class="text-[9px] bg-slate-900 border border-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono select-none uppercase scale-90">Ctrl+K</kbd>
+          </button>
         </div>
 
         <!-- Tag Filter Cloud -->
@@ -578,19 +642,9 @@ async function renderLayout() {
             </div>
           </div>
           <div id="pages-list" class="space-y-1">
-            ${filteredPages.map(page => `
-              <a href="#/page/${page.slug}" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm transition group ${currentPageSlug === page.slug && !isEditing ? 'bg-teal-950/30 text-teal-400 font-medium border-l-2 border-teal-500' : 'text-slate-400 hover:bg-slate-900/50 hover:text-slate-200'}">
-                <span class="truncate font-mono flex items-center gap-1">
-                  ${page.isEncrypted ? '<span class="text-red-400">🔒</span>' : ''}
-                  ${escapeHtml(page.title)}
-                </span>
-                ${page.isSystem ? `
-                  <span class="text-[9px] bg-slate-800 text-slate-400 px-1 py-0.5 rounded font-mono uppercase scale-90">SYS</span>
-                ` : ''}
-              </a>
-            `).join('')}
+            ${renderSidebarPages(filteredPages)}
             ${filteredPages.length === 0 ? `
-              <div class="text-center py-6 text-xs text-slate-600 font-mono">No entries found</div>
+              <div class="text-center py-6 text-xs text-slate-650 font-mono">No entries found</div>
             ` : ''}
           </div>
         </div>
@@ -888,6 +942,30 @@ async function renderPageView(container: HTMLElement) {
           </div>
           
           <div class="flex items-center gap-2 shrink-0 self-start sm:self-auto">
+            <div class="relative inline-block text-left" id="page-export-dropdown-wrapper">
+              <button id="page-export-dropdown-btn" class="flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 font-mono text-xs rounded transition uppercase">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+                Export
+              </button>
+              <div id="page-export-menu" class="hidden absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-slate-950 border border-slate-800 ring-1 ring-black ring-opacity-5 z-20 divide-y divide-slate-800">
+                <div class="py-1">
+                  <button id="export-single-md" class="w-full text-left px-4 py-2 text-xs font-mono text-slate-300 hover:bg-slate-900 hover:text-white transition">
+                    MARKDOWN (.MD)
+                  </button>
+                  <button id="export-single-html" class="w-full text-left px-4 py-2 text-xs font-mono text-slate-300 hover:bg-slate-900 hover:text-white transition">
+                    OFFLINE HTML (.HTML)
+                  </button>
+                </div>
+                <div class="py-1">
+                  <button id="export-single-print" class="w-full text-left px-4 py-2 text-xs font-mono text-slate-300 hover:bg-slate-900 hover:text-white transition">
+                    PRINT / PDF
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <a href="#/edit/${page.slug}" class="flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 font-mono text-xs rounded transition uppercase">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -943,6 +1021,161 @@ async function renderPageView(container: HTMLElement) {
       ${tocHtml}
     </div>
   `;
+
+  // Bind Export Dropdown Action
+  const exportDropdownBtn = document.getElementById('page-export-dropdown-btn');
+  const exportMenu = document.getElementById('page-export-menu');
+  if (exportDropdownBtn && exportMenu) {
+    exportDropdownBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      exportMenu.classList.toggle('hidden');
+    });
+    
+    document.addEventListener('click', () => {
+      exportMenu.classList.add('hidden');
+    });
+
+    const singleMdBtn = document.getElementById('export-single-md')!;
+    singleMdBtn.addEventListener('click', async () => {
+      let content = page.content;
+      if (page.isEncrypted && activeCryptoKey) {
+        try {
+          content = await decryptText(page.content, activeCryptoKey);
+        } catch {
+          // Fallback
+        }
+      }
+      
+      const fileHeader = `---
+title: ${page.title}
+slug: ${page.slug}
+tags: ${page.tags.join(', ')}
+updated: ${new Date(page.updatedAt).toISOString()}
+encrypted: ${!!page.isEncrypted}
+---
+
+`;
+      const blob = new Blob([fileHeader + content], { type: 'text/markdown;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${page.slug}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+
+    const singleHtmlBtn = document.getElementById('export-single-html')!;
+    singleHtmlBtn.addEventListener('click', async () => {
+      let content = page.content;
+      if (page.isEncrypted && activeCryptoKey) {
+        try {
+          content = await decryptText(page.content, activeCryptoKey);
+        } catch {
+          // Fallback
+        }
+      }
+      const rendered = renderMarkdownSecure(content);
+      const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${escapeHtml(page.title)} - SecOps Wiki Offline</title>
+  <style>
+    body {
+      background-color: #0b0f19;
+      color: #cbd5e1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      padding: 2rem;
+      max-width: 800px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+    h1 {
+      font-size: 2.25rem;
+      color: #f8fafc;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    h2 { font-size: 1.5rem; color: #f1f5f9; margin-top: 2rem; border-bottom: 1px solid #1e293b; padding-bottom: 0.3rem; }
+    h3 { font-size: 1.25rem; color: #f1f5f9; margin-top: 1.5rem; }
+    a { color: #2dd4bf; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    pre {
+      background: #020617;
+      border: 1px solid #1e293b;
+      padding: 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    code {
+      font-family: ui-monospace, monospace;
+      background: #1e293b;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: #e2e8f0;
+    }
+    pre code { background: none; padding: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { border: 1px solid #1e293b; padding: 0.5rem; text-align: left; }
+    th { background: #0f172a; color: #f1f5f9; }
+    blockquote {
+      border-left: 4px solid #0d9488;
+      padding-left: 1rem;
+      margin-left: 0;
+      color: #94a3b8;
+      font-style: italic;
+    }
+    .metadata {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-bottom: 2rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge {
+      display: inline-block;
+      background: #134e4a;
+      color: #2dd4bf;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      margin-right: 0.5rem;
+      border: 1px solid #115e59;
+    }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(page.title)}</h1>
+  <div class="metadata">
+    Slug: ${page.slug} &nbsp;|&nbsp; 
+    Updated: ${new Date(page.updatedAt).toLocaleString()} &nbsp;|&nbsp;
+    Tags: ${page.tags.map(t => `<span class="badge">#${escapeHtml(t)}</span>`).join('')}
+  </div>
+  <article>
+    ${rendered}
+  </article>
+</body>
+</html>`;
+      const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${page.slug}.html`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+
+    const singlePrintBtn = document.getElementById('export-single-print')!;
+    singlePrintBtn.addEventListener('click', () => {
+      window.print();
+    });
+  }
 
   // Bind Delete Page Button
   const deleteBtn = document.getElementById('delete-page-btn');
@@ -1424,8 +1657,468 @@ async function renderEditView(container: HTMLElement) {
   });
 }
 
+function parseMarkdownImport(fileName: string, rawText: string): WikiPage {
+  let title = fileName.replace(/\.md$/i, '').replace(/[-_]+/g, ' ');
+  title = title.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  
+  let slug = fileName.replace(/\.md$/i, '').toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
+  let content = rawText;
+  let tags: string[] = ['imported'];
+  
+  if (rawText.startsWith('---')) {
+    const endIdx = rawText.indexOf('---', 3);
+    if (endIdx !== -1) {
+      const frontmatterText = rawText.substring(3, endIdx);
+      content = rawText.substring(endIdx + 3).trim();
+      
+      const lines = frontmatterText.split('\n');
+      lines.forEach(line => {
+        const colonIdx = line.indexOf(':');
+        if (colonIdx !== -1) {
+          const key = line.substring(0, colonIdx).trim().toLowerCase();
+          const val = line.substring(colonIdx + 1).trim();
+          
+          if (key === 'title') {
+            title = val.replace(/^["']|["']$/g, '');
+          } else if (key === 'slug') {
+            slug = val.replace(/[^a-z0-9-_]+/g, '-').toLowerCase();
+          } else if (key === 'tags') {
+            tags = val.split(',').map(t => t.trim().replace(/^["']|["']$/g, '')).filter(t => t.length > 0);
+          }
+        }
+      });
+    }
+  }
+  
+  return {
+    slug,
+    title,
+    content,
+    updatedAt: Date.now(),
+    tags,
+    isSystem: false
+  };
+}
+
+function generateCSVReport(pages: WikiPage[]): string {
+  const headers = ['Title', 'Slug', 'Tags', 'Word Count', 'Encrypted', 'Last Updated'];
+  const rows = pages.map(p => {
+    const wordCount = p.content.split(/\s+/).filter(w => w.length > 0).length;
+    return [
+      `"${p.title.replace(/"/g, '""')}"`,
+      `"${p.slug}"`,
+      `"${p.tags.join(', ')}"`,
+      wordCount,
+      p.isEncrypted ? 'TRUE' : 'FALSE',
+      `"${new Date(p.updatedAt).toISOString()}"`
+    ];
+  });
+  return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+}
+
+function generateConsolidatedHTML(pages: WikiPage[]): string {
+  let pagesHtml = '';
+  for (const page of pages) {
+    let content = page.content;
+    if (page.isEncrypted && activeCryptoKey) {
+      try {
+        content = page.content.includes(':') ? "🔒 [Encrypted Document: Passphrase Required]" : page.content;
+      } catch {
+        content = `🔒 [Encrypted Document: Passphrase Required]`;
+      }
+    }
+    const rendered = renderMarkdownSecure(content);
+    pagesHtml += `
+      <section style="page-break-after: always; margin-bottom: 3rem; border-bottom: 2px solid #e2e8f0; padding-bottom: 2rem;">
+        <h1 style="font-size: 2.25rem; font-family: monospace; margin-bottom: 0.5rem; color: #1a202c;">${escapeHtml(page.title)}</h1>
+        <div style="font-size: 0.75rem; color: #718096; font-family: monospace; margin-bottom: 1.5rem;">
+          SLUG: ${page.slug} | TAGS: #${page.tags.join(', #')} | UPDATED: ${new Date(page.updatedAt).toLocaleString()}
+        </div>
+        <div style="line-height: 1.6; color: #2d3748;">
+          ${rendered}
+        </div>
+      </section>
+    `;
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SecOps Wiki - Consolidated Document Register</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 2rem; max-width: 800px; margin: 0 auto; color: #1a202c; background-color: #fff; }
+    h1, h2, h3 { color: #1a202c; }
+    pre { background: #f7fafc; border: 1px solid #e2e8f0; padding: 1rem; border-radius: 4px; overflow-x: auto; }
+    code { font-family: monospace; font-size: 0.9em; background: #edf2f7; padding: 0.2rem 0.4rem; border-radius: 3px; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { border: 1px solid #e2e8f0; padding: 0.5rem; text-align: left; }
+    th { background: #f7fafc; }
+    blockquote { border-left: 4px solid #4a5568; padding-left: 1rem; margin-left: 0; font-style: italic; color: #4a5568; }
+    @media print {
+      body { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header style="text-align: center; margin-bottom: 4rem; border-bottom: 3px double #cbd5e0; padding-bottom: 2rem;">
+    <h1 style="font-size: 2.5rem; margin-bottom: 0.5rem; font-family: monospace;">SECOPS INTEL REGISTER</h1>
+    <p style="font-size: 0.875rem; color: #718096; font-family: monospace; text-transform: uppercase;">Consolidated Offline Backup File // Generated: ${new Date().toLocaleString()}</p>
+  </header>
+  ${pagesHtml}
+</body>
+</html>`;
+}
+
+function generateStaticWikiZip(pages: WikiPage[]): Blob {
+  const files: { name: string; content: string }[] = [];
+
+  const sidebarLinks = pages.map(p => {
+    return `<a href="${p.slug}.html" style="display: block; padding: 0.5rem; color: #94a3b8; text-decoration: none; font-family: monospace; font-size: 0.8rem; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.background='#1e293b'; this.style.color='#2dd4bf'" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8'">${escapeHtml(p.title)}</a>`;
+  }).join('\n');
+
+  const indexHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SecOps Static Wiki Index</title>
+  <style>
+    body {
+      background-color: #0b0f19;
+      color: #cbd5e1;
+      font-family: ui-monospace, monospace;
+      padding: 2rem;
+      max-width: 1000px;
+      margin: 0 auto;
+      display: flex;
+      gap: 2rem;
+    }
+    aside {
+      width: 250px;
+      border-right: 1px solid #1e293b;
+      padding-right: 1.5rem;
+      flex-shrink: 0;
+    }
+    main {
+      flex-grow: 1;
+    }
+    h1 {
+      font-size: 2rem;
+      color: #f8fafc;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 0.5rem;
+    }
+    .page-card {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .page-title {
+      font-size: 1.25rem;
+      font-weight: bold;
+      color: #2dd4bf;
+      text-decoration: none;
+    }
+    .page-title:hover {
+      text-decoration: underline;
+    }
+    .metadata {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-top: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <h3 style="color: #f8fafc; font-size: 0.9rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 1rem; font-family: monospace;">Pages Registry</h3>
+    <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+      ${sidebarLinks}
+    </div>
+  </aside>
+  <main>
+    <h1>SecOps Static Wiki Register</h1>
+    <p style="margin-bottom: 2rem; color: #94a3b8; font-size: 0.85rem;">This is an offline-friendly static compilation of the active wiki database. Double-click any page in the sidebar or below to navigate.</p>
+    <div>
+      ${pages.map(p => `
+        <div class="page-card">
+          <a class="page-title" href="${p.slug}.html">${escapeHtml(p.title)}</a>
+          <div class="metadata">
+            SLUG: ${p.slug} | TAGS: #${p.tags.join(', #')} | UPDATED: ${new Date(p.updatedAt).toLocaleString()}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  </main>
+</body>
+</html>`;
+
+  files.push({ name: 'index.html', content: indexHtml });
+
+  pages.forEach(p => {
+    let content = p.content;
+    if (p.isEncrypted && activeCryptoKey) {
+      try {
+        content = p.content.includes(':') ? "🔒 [Encrypted Document: Decrypted view not exported]" : p.content;
+      } catch {
+        content = "🔒 [Encrypted Document: Decrypted view not exported]";
+      }
+    }
+    
+    let rendered = renderMarkdownSecure(content);
+    rendered = rendered.replace(/href="#\/page\/([a-z0-9-_]+)"/g, 'href="$1.html"');
+
+    const pageHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${escapeHtml(p.title)} - SecOps Static Wiki</title>
+  <style>
+    body {
+      background-color: #0b0f19;
+      color: #cbd5e1;
+      font-family: ui-monospace, monospace;
+      padding: 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      gap: 2rem;
+    }
+    aside {
+      width: 250px;
+      border-right: 1px solid #1e293b;
+      padding-right: 1.5rem;
+      flex-shrink: 0;
+      overflow-y: auto;
+      max-height: 90vh;
+      position: sticky;
+      top: 2rem;
+    }
+    main {
+      flex-grow: 1;
+      min-width: 0;
+    }
+    h1 {
+      font-size: 2.25rem;
+      color: #f8fafc;
+      margin-bottom: 0.5rem;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 0.5rem;
+    }
+    h2 { font-size: 1.5rem; color: #f1f5f9; margin-top: 2rem; border-bottom: 1px solid #1e293b; padding-bottom: 0.3rem; }
+    h3 { font-size: 1.25rem; color: #f1f5f9; margin-top: 1.5rem; }
+    a { color: #2dd4bf; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    pre {
+      background: #020617;
+      border: 1px solid #1e293b;
+      padding: 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    code {
+      font-family: ui-monospace, monospace;
+      background: #1e293b;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: #e2e8f0;
+    }
+    pre code { background: none; padding: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { border: 1px solid #1e293b; padding: 0.5rem; text-align: left; }
+    th { background: #0f172a; color: #f1f5f9; }
+    blockquote {
+      border-left: 4px solid #0d9488;
+      padding-left: 1rem;
+      margin-left: 0;
+      color: #94a3b8;
+      font-style: italic;
+    }
+    .metadata {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-bottom: 2rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge {
+      display: inline-block;
+      background: #134e4a;
+      color: #2dd4bf;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      margin-right: 0.5rem;
+      border: 1px solid #115e59;
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <a href="index.html" style="display: block; margin-bottom: 1.5rem; font-weight: bold; color: #f8fafc; text-decoration: none; font-size: 0.95rem;">← INDEX DIRECTORY</a>
+    <h3 style="color: #f8fafc; font-size: 0.8rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 1rem;">Pages Registry</h3>
+    <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+      ${sidebarLinks}
+    </div>
+  </aside>
+  <main>
+    <h1>${escapeHtml(p.title)}</h1>
+    <div class="metadata">
+      Slug: ${p.slug} &nbsp;|&nbsp; 
+      Updated: ${new Date(p.updatedAt).toLocaleString()} &nbsp;|&nbsp;
+      Tags: ${p.tags.map(t => `<span class="badge">#${escapeHtml(t)}</span>`).join('')}
+    </div>
+    <article class="wiki-content">
+      ${rendered}
+    </article>
+  </main>
+</body>
+</html>`;
+
+    files.push({ name: `${p.slug}.html`, content: pageHtml });
+  });
+
+  return generateZipArchive(files);
+}
+
+function parseCSV(text: string): Record<string, string>[] {
+  const lines: string[] = [];
+  let currentLine = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      currentLine += char;
+    } else if (char === '\n' && !inQuotes) {
+      lines.push(currentLine);
+      currentLine = '';
+    } else {
+      currentLine += char;
+    }
+  }
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+  
+  if (lines.length < 2) return [];
+  
+  const parseLine = (line: string): string[] => {
+    const cells: string[] = [];
+    let cell = '';
+    let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQ = !inQ;
+      } else if (char === ',' && !inQ) {
+        cells.push(cleanCell(cell));
+        cell = '';
+      } else {
+        cell += char;
+      }
+    }
+    cells.push(cleanCell(cell));
+    return cells;
+  };
+  
+  const cleanCell = (c: string): string => {
+    c = c.trim();
+    if (c.startsWith('"') && c.endsWith('"')) {
+      c = c.substring(1, c.length - 1);
+    }
+    return c.replace(/""/g, '"');
+  };
+  
+  const headers = parseLine(lines[0]).map(h => h.toLowerCase());
+  const results: Record<string, string>[] = [];
+  
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    const cells = parseLine(lines[i]);
+    const obj: Record<string, string> = {};
+    headers.forEach((h, index) => {
+      obj[h] = cells[index] || '';
+    });
+    results.push(obj);
+  }
+  
+  return results;
+}
+
+function csvRowToWikiPage(row: Record<string, string>): WikiPage {
+  const title = row['title'] || 'Untitled CSV Import';
+  const content = row['content'] || '';
+  let slug = row['slug'] || title.toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
+  slug = slug.toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
+  if (!slug) {
+    slug = `imported-${Date.now()}`;
+  }
+  
+  const tagsStr = row['tags'] || 'imported, csv';
+  const tags = tagsStr.split(/[,;|]+/).map(t => t.trim().toLowerCase()).filter(t => t.length > 0);
+  
+  const updatedAt = row['updatedat'] ? parseInt(row['updatedat']) : Date.now();
+  
+  return {
+    slug,
+    title,
+    content,
+    updatedAt: isNaN(updatedAt) ? Date.now() : updatedAt,
+    tags,
+    isSystem: false,
+    isEncrypted: row['encrypted']?.toLowerCase() === 'true'
+  };
+}
+
+async function importWikiPage(page: WikiPage, mode: string): Promise<boolean> {
+  const validated = validateImportedPage(page);
+  const existing = await getPage(validated.slug);
+  
+  if (existing) {
+    if (mode === 'SKIP') {
+      return false;
+    }
+    if (mode === 'REVISION') {
+      await saveRevision({
+        id: `${existing.slug}-${Date.now()}`,
+        slug: existing.slug,
+        title: existing.title,
+        content: existing.content,
+        updatedAt: existing.updatedAt,
+        isEncrypted: existing.isEncrypted
+      });
+      await savePage(validated);
+    } else if (mode === 'OVERWRITE') {
+      await savePage(validated);
+    } else if (mode === 'MERGE_RENAME') {
+      let newSlug = `${validated.slug}-imported`;
+      let check = await getPage(newSlug);
+      let counter = 1;
+      while (check) {
+        newSlug = `${validated.slug}-imported-${counter}`;
+        check = await getPage(newSlug);
+        counter++;
+      }
+      validated.slug = newSlug;
+      validated.title = `${validated.title} (Imported)`;
+      await savePage(validated);
+    }
+  } else {
+    await savePage(validated);
+  }
+  return true;
+}
+
 // 3. Render System Administration View
 function renderSystemView(container: HTMLElement) {
+  const allTags = Array.from(new Set(wikiPagesList.flatMap(p => p.tags)));
+  
   container.innerHTML = `
     <div class="space-y-6">
       <!-- Title -->
@@ -1493,14 +2186,25 @@ function renderSystemView(container: HTMLElement) {
 
       <!-- Actions Panel -->
       <div class="glass-panel border border-slate-800 rounded-xl p-5 space-y-5">
-        <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider border-b border-slate-800 pb-2">Data Operations & Backups</h3>
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-2">
+          <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider">Data Operations & Backups</h3>
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] font-mono text-slate-500 uppercase">Export Scope Tag:</span>
+            <select id="export-tag-filter" class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs font-mono text-slate-300 focus:outline-none focus:border-teal-500">
+              <option value="ALL">ALL ARTICLES</option>
+              ${allTags.map(tag => `
+                <option value="${escapeHtml(tag)}">#${escapeHtml(tag)}</option>
+              `).join('')}
+            </select>
+          </div>
+        </div>
         
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <!-- Export Database JSON -->
           <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
             <div>
               <h4 class="text-xs font-bold font-mono text-white uppercase">Export Database JSON</h4>
-              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Export all wiki contents to a validated JSON payload file.</p>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Export scoped wiki contents to a validated JSON payload file.</p>
             </div>
             <button id="system-export-btn" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
               Download JSON
@@ -1511,27 +2215,107 @@ function renderSystemView(container: HTMLElement) {
           <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
             <div>
               <h4 class="text-xs font-bold font-mono text-white uppercase">Export Markdown ZIP</h4>
-              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Export all articles as separate .md documents inside a ZIP container.</p>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Export scoped articles as separate .md documents inside a ZIP container.</p>
             </div>
             <button id="system-export-zip-btn" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
               Download ZIP
             </button>
           </div>
 
-          <!-- Import Backup -->
+          <!-- Export Static Website HTML ZIP -->
           <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
             <div>
-              <h4 class="text-xs font-bold font-mono text-white uppercase">Import Payload</h4>
-              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Upload and ingest a validated JSON file to the local database.</p>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Static Web Book (ZIP)</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Export scoped articles as fully-functional, hyperlinked offline .html documents in a ZIP.</p>
             </div>
-            <label class="w-full text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block">
-              Load Payload
+            <button id="system-export-web-zip-btn" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
+              Download Web ZIP
+            </button>
+          </div>
+
+          <!-- Export Consolidated HTML -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Consolidated HTML Book</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Export scoped pages concatenated into a single styled, printable HTML file.</p>
+            </div>
+            <button id="system-export-html-btn" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
+              Download HTML
+            </button>
+          </div>
+
+          <!-- Export CSV Report -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Export CSV Metadata</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Download a metadata and audit log spreadsheet report in CSV format.</p>
+            </div>
+            <button id="system-export-csv-btn" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition hover:text-white">
+              Download CSV
+            </button>
+          </div>
+
+          <!-- Conflict Resolution Options -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between sm:col-span-2 lg:col-span-1">
+            <div>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Conflict Resolution</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Select system behavior when importing existing page slugs.</p>
+            </div>
+            <select id="import-conflict-resolution" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition focus:outline-none focus:border-teal-500 text-center cursor-pointer">
+              <option value="REVISION">ARCHIVE OLD AS REV</option>
+              <option value="OVERWRITE">DIRECT OVERWRITE</option>
+              <option value="SKIP">SKIP DUPLICATE</option>
+              <option value="MERGE_RENAME">KEEP BOTH (RENAME)</option>
+            </select>
+          </div>
+
+          <!-- Import JSON Payload -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Import JSON Payload</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Ingest a JSON backup payload into the database (up to 100MB).</p>
+            </div>
+            <label class="w-full text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block select-none">
+              Load JSON
               <input type="file" id="system-import-file" accept=".json" class="hidden">
             </label>
           </div>
 
-          <!-- Reset Default Database -->
+          <!-- Import Markdown Files -->
           <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Import Markdown Files</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Load one or more raw markdown (.md) documents. Frontmatter supported.</p>
+            </div>
+            <label class="w-full text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block select-none">
+              Load .MD Files
+              <input type="file" id="system-import-md-files" accept=".md" multiple class="hidden">
+            </label>
+          </div>
+
+          <!-- Import CSV Registry -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Import CSV Registry</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Load page logs from CSV spreadsheet format. Column headers required.</p>
+            </div>
+            <label class="w-full text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block select-none">
+              Load CSV
+              <input type="file" id="system-import-csv-file" accept=".csv" class="hidden">
+            </label>
+          </div>
+
+          <!-- Drag & Drop Zone -->
+          <div id="system-drop-zone" class="glass-panel border-2 border-dashed border-slate-800 hover:border-teal-500/60 p-5 rounded-lg flex flex-col items-center justify-center text-center transition-all cursor-pointer sm:col-span-2 lg:col-span-3 min-h-[100px] bg-slate-950/20">
+            <svg class="w-8 h-8 text-slate-500 mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/>
+            </svg>
+            <span class="text-[10px] font-mono text-slate-300 uppercase font-semibold">Bulk Drag & Drop Terminal</span>
+            <span class="text-[9px] font-mono text-slate-500 mt-0.5">Drop JSON, Markdown (.md), or CSV files here to ingest automatically.</span>
+          </div>
+
+          <!-- Reset Default Database -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between sm:col-span-2 lg:col-span-3">
             <div>
               <h4 class="text-xs font-bold font-mono text-red-400 uppercase">Sanitize Storage</h4>
               <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Wipe all user edits and restore default template configuration.</p>
@@ -1551,22 +2335,35 @@ function renderSystemView(container: HTMLElement) {
   // Bind export/import/wipe/zip actions
   const exportBtn = document.getElementById('system-export-btn')!;
   const exportZipBtn = document.getElementById('system-export-zip-btn')!;
+  const exportWebZipBtn = document.getElementById('system-export-web-zip-btn')!;
+  const exportCsvBtn = document.getElementById('system-export-csv-btn')!;
+  const exportHtmlBtn = document.getElementById('system-export-html-btn')!;
   const importFile = document.getElementById('system-import-file') as HTMLInputElement;
+  const importMdFiles = document.getElementById('system-import-md-files') as HTMLInputElement;
+  const importCsvFile = document.getElementById('system-import-csv-file') as HTMLInputElement;
   const resetBtn = document.getElementById('system-reset-btn')!;
   const statsLabel = document.getElementById('total-articles-telemetry')!;
   const diagnosticsContainer = document.getElementById('db-health-diagnostics')!;
+  const dropZone = document.getElementById('system-drop-zone')!;
 
-  // Dynamic telemetry value loading
   statsLabel.textContent = wikiPagesList.length.toString();
 
-  // Trigger diagnostics run
   if (diagnosticsContainer) {
     runDatabaseDiagnostics(diagnosticsContainer);
   }
 
+  const getScopedPages = (): WikiPage[] => {
+    const filterSelect = document.getElementById('export-tag-filter') as HTMLSelectElement;
+    const selectedTag = filterSelect?.value || 'ALL';
+    return selectedTag === 'ALL'
+      ? wikiPagesList
+      : wikiPagesList.filter(p => p.tags.includes(selectedTag));
+  };
+
   // Export database JSON handler
   exportBtn.addEventListener('click', () => {
-    const dataStr = JSON.stringify(wikiPagesList, null, 2);
+    const pagesToExport = getScopedPages();
+    const dataStr = JSON.stringify(pagesToExport, null, 2);
     const blob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     
@@ -1576,21 +2373,21 @@ function renderSystemView(container: HTMLElement) {
     document.body.appendChild(a);
     a.click();
     
-    // Clean up
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   });
 
   // Export database ZIP handler
   exportZipBtn.addEventListener('click', async () => {
+    const pagesToExport = getScopedPages();
     const filesToPack: { name: string; content: string }[] = [];
-    for (const page of wikiPagesList) {
+    for (const page of pagesToExport) {
       let content = page.content;
       if (page.isEncrypted && activeCryptoKey) {
         try {
           content = await decryptText(page.content, activeCryptoKey);
         } catch {
-          // Fallback to ciphertext if decryption fails
+          // Keep encrypted
         }
       }
       
@@ -1622,40 +2419,88 @@ encrypted: ${!!page.isEncrypted}
     URL.revokeObjectURL(url);
   });
 
-  // Import database payload handler
+  // Export Static Web ZIP handler
+  exportWebZipBtn.addEventListener('click', () => {
+    const pagesToExport = getScopedPages();
+    const zipBlob = generateStaticWikiZip(pagesToExport);
+    const url = URL.createObjectURL(zipBlob);
+    
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `secops-wiki-web-${Date.now()}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  // Export CSV handler
+  exportCsvBtn.addEventListener('click', () => {
+    const pagesToExport = getScopedPages();
+    const csvContent = generateCSVReport(pagesToExport);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `secops-wiki-report-${Date.now()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  // Export HTML Book handler
+  exportHtmlBtn.addEventListener('click', () => {
+    const pagesToExport = getScopedPages();
+    const htmlContent = generateConsolidatedHTML(pagesToExport);
+    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `secops-wiki-book-${Date.now()}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  // Import JSON payload handler (Up to 100MB)
   importFile.addEventListener('change', (event) => {
     const file = (event.target as HTMLInputElement).files?.[0];
     if (!file) return;
 
-    if (file.size > 1024 * 1024) {
-      alert('Ingestion failed: File size exceeds the secure ceiling of 1MB.');
+    if (file.size > 100 * 1024 * 1024) {
+      alert('Ingestion failed: File size exceeds the secure ceiling of 100MB.');
       return;
     }
+
+    const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
 
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
         const json = JSON.parse(e.target?.result as string);
-        if (!Array.isArray(json)) {
-          throw new Error('Payload root structure must be an array of page objects.');
-        }
+        const items = Array.isArray(json) ? json : [json];
 
-        // Validate each page using security rules
-        const cleanPages: WikiPage[] = [];
-        for (const item of json) {
-          const validated = validateImportedPage(item);
-          cleanPages.push(validated);
-        }
+        let importedCount = 0;
+        let skippedCount = 0;
+        let failCount = 0;
 
-        // Commits data to IndexedDB
-        if (confirm(`SYSTEM INGESTION PROTOCOL: Import ${cleanPages.length} validated articles? This may overwrite conflicting entries.`)) {
-          for (const page of cleanPages) {
-            await savePage(page);
+        if (confirm(`SYSTEM INGESTION PROTOCOL: Import ${items.length} articles from JSON backup? Conflict mode: ${resolutionMode.toUpperCase()}`)) {
+          for (const item of items) {
+            try {
+              const success = await importWikiPage(item, resolutionMode);
+              if (success) importedCount++;
+              else skippedCount++;
+            } catch {
+              failCount++;
+            }
           }
-          alert('Ingestion completed successfully.');
+          alert(`JSON INGESTION RESULTS:\n- Imported: ${importedCount}\n- Skipped: ${skippedCount}\n- Failed: ${failCount}`);
           syncChannel.postMessage('refresh');
           await refreshPagesList();
-          window.location.hash = '#/page/home';
+          await renderLayout();
         }
       } catch (err: any) {
         alert(`Ingestion failed: Schema violation. ${err.message}`);
@@ -1664,10 +2509,307 @@ encrypted: ${!!page.isEncrypted}
     reader.readAsText(file);
   });
 
+  // Import Markdown Files handler
+  importMdFiles.addEventListener('change', async (event) => {
+    const files = (event.target as HTMLInputElement).files;
+    if (!files || files.length === 0) return;
+
+    const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
+    let successCount = 0;
+    let skippedCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.size > 10 * 1024 * 1024) {
+        failCount++;
+        continue;
+      }
+
+      await new Promise<void>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const rawText = e.target?.result as string;
+            const wikiPage = parseMarkdownImport(file.name, rawText);
+            const success = await importWikiPage(wikiPage, resolutionMode);
+            if (success) successCount++;
+            else skippedCount++;
+          } catch {
+            failCount++;
+          }
+          resolve();
+        };
+        reader.readAsText(file);
+      });
+    }
+
+    alert(`MARKDOWN IMPORT RESULTS:\n- Imported: ${successCount}\n- Skipped: ${skippedCount}\n- Failed: ${failCount}`);
+    syncChannel.postMessage('refresh');
+    await refreshPagesList();
+    await renderLayout();
+  });
+
+  // Import CSV handler
+  importCsvFile.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+
+    if (file.size > 10 * 1024 * 1024) {
+      alert('Ingestion failed: CSV File exceeds secure limit of 10MB.');
+      return;
+    }
+
+    const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const rows = parseCSV(text);
+        
+        if (rows.length === 0) {
+          throw new Error('No rows found in CSV file.');
+        }
+
+        let successCount = 0;
+        let skippedCount = 0;
+        let failCount = 0;
+
+        if (confirm(`SYSTEM INGESTION PROTOCOL: Import ${rows.length} records from CSV? Conflict mode: ${resolutionMode.toUpperCase()}`)) {
+          for (const row of rows) {
+            try {
+              const pageData = csvRowToWikiPage(row);
+              const success = await importWikiPage(pageData, resolutionMode);
+              if (success) successCount++;
+              else skippedCount++;
+            } catch {
+              failCount++;
+            }
+          }
+          alert(`CSV IMPORT RESULTS:\n- Imported: ${successCount}\n- Skipped: ${skippedCount}\n- Failed: ${failCount}`);
+          syncChannel.postMessage('refresh');
+          await refreshPagesList();
+          await renderLayout();
+        }
+      } catch (err: any) {
+        alert(`CSV Ingestion failed: ${err.message}`);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  // Drag & Drop event bindings
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    dropZone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    }, false);
+  });
+
+  ['dragenter', 'dragover'].forEach(eventName => {
+    dropZone.addEventListener(eventName, () => {
+      dropZone.classList.add('border-teal-500', 'bg-teal-950/10');
+    }, false);
+  });
+
+  ['dragleave', 'drop'].forEach(eventName => {
+    dropZone.addEventListener(eventName, () => {
+      dropZone.classList.remove('border-teal-500', 'bg-teal-950/10');
+    }, false);
+  });
+
+  dropZone.addEventListener('drop', async (e) => {
+    const dt = e.dataTransfer;
+    const files = dt?.files;
+    if (!files || files.length === 0) return;
+    
+    const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
+    let mdSuccess = 0, csvSuccess = 0, jsonSuccess = 0;
+    let mdSkip = 0, csvSkip = 0, jsonSkip = 0;
+    let mdFail = 0, csvFail = 0, jsonFail = 0;
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      
+      if (ext === 'md') {
+        await new Promise<void>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = async (event) => {
+            try {
+              const rawText = event.target?.result as string;
+              const wikiPage = parseMarkdownImport(file.name, rawText);
+              const success = await importWikiPage(wikiPage, resolutionMode);
+              if (success) mdSuccess++;
+              else mdSkip++;
+            } catch {
+              mdFail++;
+            }
+            resolve();
+          };
+          reader.readAsText(file);
+        });
+      } else if (ext === 'csv') {
+        await new Promise<void>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = async (event) => {
+            try {
+              const text = event.target?.result as string;
+              const rows = parseCSV(text);
+              for (const row of rows) {
+                try {
+                  const pageData = csvRowToWikiPage(row);
+                  const success = await importWikiPage(pageData, resolutionMode);
+                  if (success) csvSuccess++;
+                  else csvSkip++;
+                } catch {
+                  csvFail++;
+                }
+              }
+            } catch {
+              csvFail++;
+            }
+            resolve();
+          };
+          reader.readAsText(file);
+        });
+      } else if (ext === 'json') {
+        await new Promise<void>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = async (event) => {
+            try {
+              const json = JSON.parse(event.target?.result as string);
+              const items = Array.isArray(json) ? json : [json];
+              for (const item of items) {
+                try {
+                  const success = await importWikiPage(item, resolutionMode);
+                  if (success) jsonSuccess++;
+                  else jsonSkip++;
+                } catch {
+                  jsonFail++;
+                }
+              }
+            } catch {
+              jsonFail++;
+            }
+            resolve();
+          };
+          reader.readAsText(file);
+        });
+      }
+    }
+    
+    alert(`DRAG & DROP IMPORT COMPLETED (Conflict resolution: ${resolutionMode.toUpperCase()}):\n\n` +
+          `Markdown (.md) files:\n- Ingested: ${mdSuccess}\n- Skipped: ${mdSkip}\n- Failed: ${mdFail}\n\n` +
+          `CSV files (rows):\n- Ingested: ${csvSuccess}\n- Skipped: ${csvSkip}\n- Failed: ${csvFail}\n\n` +
+          `JSON files (records):\n- Ingested: ${jsonSuccess}\n- Skipped: ${jsonSkip}\n- Failed: ${jsonFail}`);
+          
+    syncChannel.postMessage('refresh');
+    await refreshPagesList();
+    await renderLayout();
+  });
+  
+  dropZone.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = '.md,.csv,.json';
+    input.onchange = async (event) => {
+      const selectedFiles = (event.target as HTMLInputElement).files;
+      if (!selectedFiles || selectedFiles.length === 0) return;
+      
+      const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
+      let mdSuccess = 0, csvSuccess = 0, jsonSuccess = 0;
+      let mdSkip = 0, csvSkip = 0, jsonSkip = 0;
+      let mdFail = 0, csvFail = 0, jsonFail = 0;
+      
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        
+        if (ext === 'md') {
+          await new Promise<void>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+              try {
+                const rawText = event.target?.result as string;
+                const wikiPage = parseMarkdownImport(file.name, rawText);
+                const success = await importWikiPage(wikiPage, resolutionMode);
+                if (success) mdSuccess++;
+                else mdSkip++;
+              } catch {
+                mdFail++;
+              }
+              resolve();
+            };
+            reader.readAsText(file);
+          });
+        } else if (ext === 'csv') {
+          await new Promise<void>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+              try {
+                const text = event.target?.result as string;
+                const rows = parseCSV(text);
+                for (const row of rows) {
+                  try {
+                    const pageData = csvRowToWikiPage(row);
+                    const success = await importWikiPage(pageData, resolutionMode);
+                    if (success) csvSuccess++;
+                    else csvSkip++;
+                  } catch {
+                    csvFail++;
+                  }
+                }
+              } catch {
+                csvFail++;
+              }
+              resolve();
+            };
+            reader.readAsText(file);
+          });
+        } else if (ext === 'json') {
+          await new Promise<void>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+              try {
+                const json = JSON.parse(event.target?.result as string);
+                const items = Array.isArray(json) ? json : [json];
+                for (const item of items) {
+                  try {
+                    const success = await importWikiPage(item, resolutionMode);
+                    if (success) jsonSuccess++;
+                    else jsonSkip++;
+                  } catch {
+                    jsonFail++;
+                  }
+                }
+              } catch {
+                jsonFail++;
+              }
+              resolve();
+            };
+            reader.readAsText(file);
+          });
+        }
+      }
+      
+      alert(`FILE SELECTION IMPORT COMPLETED (Conflict resolution: ${resolutionMode.toUpperCase()}):\n\n` +
+            `Markdown (.md) files:\n- Ingested: ${mdSuccess}\n- Skipped: ${mdSkip}\n- Failed: ${mdFail}\n\n` +
+            `CSV files (rows):\n- Ingested: ${csvSuccess}\n- Skipped: ${csvSkip}\n- Failed: ${csvFail}\n\n` +
+            `JSON files (records):\n- Ingested: ${jsonSuccess}\n- Skipped: ${jsonSkip}\n- Failed: ${jsonFail}`);
+            
+      syncChannel.postMessage('refresh');
+      await refreshPagesList();
+      await renderLayout();
+    };
+    input.click();
+  });
+
   // Hard reset database handler
   resetBtn.addEventListener('click', async () => {
     if (confirm('CRITICAL WARPING WARNING: Reset and delete ALL wiki pages? Custom user documents will be permanently deleted.')) {
-      // Clear all items in IndexedDB
       const request = indexedDB.open('secops-wiki-db', 2);
       request.onsuccess = async () => {
         const db = request.result;
