@@ -1,4 +1,4 @@
-const r=self,a="secops-wiki-v1.1.0",c=["/wiki/","/wiki/index.html","/wiki/manifest.json","/wiki/icon.svg","/wiki/assets/favicon-CZuJCmGV.ico","/wiki/assets/icon-L9ClnIqC.svg","/wiki/assets/main-DP0M8Lvk.css","/wiki/assets/main-DVVwI5i2.js","/wiki/assets/manifest-BsCIBjQx.json"],h=`
+const r=self,a="secops-wiki-v1.1.0",c=["/wiki/","/wiki/index.html","/wiki/manifest.json","/wiki/icon.svg","/wiki/assets/favicon-CZuJCmGV.ico","/wiki/assets/icon-L9ClnIqC.svg","/wiki/assets/main-CacCK1sq.js","/wiki/assets/main-D5gHDlSl.css","/wiki/assets/manifest-BsCIBjQx.json"],h=`
 <!DOCTYPE html>
 <html lang="en">
 <head>

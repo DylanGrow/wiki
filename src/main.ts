@@ -1,4 +1,4 @@
-import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, PageRevision, saveRevision, getPageRevisions, deleteRevision, getTagColors, saveTagColor, clearDatabase, Attachment, AuditLog, saveAttachment, getAttachment, saveAuditLog, getAllAuditLogs, clearAuditLogs, pruneAuditLogs } from './db';
+import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, PageRevision, saveRevision, getPageRevisions, deleteRevision, getTagColors, saveTagColor, clearDatabase, Attachment, AuditLog, saveAttachment, getAttachment, saveAuditLog, getAllAuditLogs, clearAuditLogs, pruneAuditLogs , getAllAttachments} from './db';
 import { renderMarkdownSecure, validateImportedPage, escapeHtml, getSanitizationCount, sanitizeUnicode, deriveKey, encryptText, decryptText, computePageSignature } from './security';
 import './index.css';
 
@@ -700,6 +700,12 @@ async function init() {
 function resetIdleTimer() {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = setTimeout(lockSession, IDLE_TIMEOUT);
+  
+  if (!(window as any).lastHeartbeat) (window as any).lastHeartbeat = Date.now();
+  if (Date.now() - (window as any).lastHeartbeat > 5 * 60 * 1000) {
+    logSecurityEvent('SESSION_HEARTBEAT', 'User activity heartbeat');
+    (window as any).lastHeartbeat = Date.now();
+  }
 }
 
 function lockSession() {
@@ -1192,6 +1198,7 @@ async function renderLayout() {
     </header>
 
     <!-- Main Workspace -->
+    <div id="read-progress" class="fixed top-0 left-0 h-1 bg-teal-500 z-[100] transition-all duration-150" style="width: 0%"></div>
     <div class="flex-1 flex overflow-hidden min-h-0 relative">
       <!-- Sidebar mobile backdrop overlay -->
       <div id="sidebar-backdrop" class="fixed inset-0 bg-black/60 z-20 hidden md:hidden"></div>
@@ -1212,6 +1219,25 @@ async function renderLayout() {
           </button>
         </div>
 
+        
+        <!-- Pinned Docs -->
+        ${(() => {
+          const pinnedSlugs = JSON.parse(localStorage.getItem('pinned_docs') || '[]');
+          const pinnedPages = wikiPagesList.filter(p => pinnedSlugs.includes(p.slug));
+          if (pinnedPages.length > 0) {
+            return `
+            <div class="px-2 py-4 border-b border-slate-800/80 shrink-0">
+              <div class="px-3 mb-2 flex items-center justify-between">
+                <span class="text-xs font-semibold text-amber-500 uppercase tracking-widest font-mono flex items-center gap-1">? Pinned Docs</span>
+              </div>
+              <div class="space-y-1">
+                ${renderSidebarPages(pinnedPages)}
+              </div>
+            </div>`;
+          }
+          return '';
+        })()}
+        
         <!-- Tag Filter Cloud -->
         ${allTags.length > 0 ? `
           <div class="px-4 py-2 border-b border-slate-800/80 flex flex-wrap gap-1 max-h-24 overflow-y-auto shrink-0 select-none">
@@ -1797,6 +1823,20 @@ async function renderPageView(container: HTMLElement) {
               </div>
             </div>
 
+            
+            <button id="pin-page-btn" class="flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-amber-500/50 hover:text-amber-400 text-slate-300 font-mono text-xs rounded transition uppercase">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+              </svg>
+              <span id="pin-page-text">Pin</span>
+            </button>
+            <button id="clone-page-btn" class="flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 font-mono text-xs rounded transition uppercase">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+              </svg>
+              Clone
+            </button>
             <a href="#/edit/${page.slug}" class="flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 font-mono text-xs rounded transition uppercase">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -1839,6 +1879,9 @@ async function renderPageView(container: HTMLElement) {
                   <button class="restore-rev-btn px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-teal-400 hover:text-teal-300 font-mono text-[10px] rounded transition uppercase shrink-0 self-start sm:self-auto" data-rev-id="${escapeHtml(rev.id)}">
                     ROLLBACK
                   </button>
+                  <button class="view-rev-diff-btn px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-blue-400 hover:text-blue-300 font-mono text-[10px] rounded transition uppercase shrink-0 self-start sm:self-auto" data-rev-id="${escapeHtml(rev.id)}">
+                    Diff
+                  </button>
                 </div>
               `).join('')}
               ${revisions.length === 0 ? `
@@ -1862,6 +1905,31 @@ async function renderPageView(container: HTMLElement) {
   `;
 
   // Bind Export Dropdown Action
+  
+  const pinBtn = document.getElementById('pin-page-btn');
+  const pinText = document.getElementById('pin-page-text');
+  if (pinBtn && pinText) {
+    let pinnedSlugs = JSON.parse(localStorage.getItem('pinned_docs') || '[]');
+    if (pinnedSlugs.includes(page.slug)) {
+      pinBtn.classList.add('text-amber-400');
+      pinText.innerText = 'Unpin';
+    }
+    pinBtn.addEventListener('click', () => {
+      pinnedSlugs = JSON.parse(localStorage.getItem('pinned_docs') || '[]');
+      if (pinnedSlugs.includes(page.slug)) {
+        pinnedSlugs = pinnedSlugs.filter((s: string) => s !== page.slug);
+        pinBtn.classList.remove('text-amber-400');
+        pinText.innerText = 'Pin';
+      } else {
+        pinnedSlugs.push(page.slug);
+        pinBtn.classList.add('text-amber-400');
+        pinText.innerText = 'Unpin';
+      }
+      localStorage.setItem('pinned_docs', JSON.stringify(pinnedSlugs));
+      renderLayout();
+    });
+  }
+
   const exportDropdownBtn = document.getElementById('page-export-dropdown-btn');
   const exportMenu = document.getElementById('page-export-menu');
   if (exportDropdownBtn && exportMenu) {
@@ -1873,6 +1941,53 @@ async function renderPageView(container: HTMLElement) {
     document.addEventListener('click', () => {
       exportMenu.classList.add('hidden');
     });
+
+    
+  const cloneBtn = document.getElementById('clone-page-btn');
+  if (cloneBtn) {
+    cloneBtn.addEventListener('click', async () => {
+      const newSlug = page.slug + '-copy';
+      const clonedPage = { ...page, slug: newSlug, title: 'Copy of ' + page.title, id: crypto.randomUUID(), createdAt: Date.now(), updatedAt: Date.now() };
+      await savePageSecure(clonedPage);
+      window.location.hash = `#/edit/${newSlug}`;
+    });
+  }
+
+    
+  // TOC active heading tracker
+  const tocLinks = document.querySelectorAll('.toc-link');
+  if (tocLinks.length > 0) {
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          tocLinks.forEach(link => {
+            link.classList.remove('text-teal-400', 'font-bold');
+            if (link.getAttribute('data-id') === entry.target.id) {
+              link.classList.add('text-teal-400', 'font-bold');
+            }
+          });
+        }
+      });
+    }, { rootMargin: "0px 0px -80% 0px" });
+    
+    document.querySelectorAll('h1, h2, h3').forEach(h => observer.observe(h));
+  }
+  
+  // Reading Progress Indicator
+  const progressEl = document.getElementById('read-progress');
+  if (progressEl) {
+    const scrollHandler = () => {
+      const scrollHeight = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+      if (scrollHeight > 0) {
+        const scrolled = (window.scrollY / scrollHeight) * 100;
+        progressEl.style.width = scrolled + '%';
+      }
+    };
+    window.addEventListener('scroll', scrollHandler);
+    // Cleanup old scroll listener if we navigate away, but since it's a SPA it might stack up.
+    // So let's attach it to a specific element or remove it on render Layout.
+    // Instead of global, maybe we just add it to a wrapper.
+  }
 
     const singleMdBtn = document.getElementById('export-single-md')!;
     singleMdBtn.addEventListener('click', async () => {
@@ -2349,6 +2464,7 @@ async function renderEditView(container: HTMLElement) {
           <div id="editor-layout-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div id="edit-content-container" class="block relative">
               <textarea id="edit-content" rows="16" required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-b-lg p-4 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono border-t-0" placeholder="Enter markdown payload here...">${escapeHtml(initialContent)}</textarea>
+              <div id="editor-stats" class="text-right text-[10px] text-slate-500 font-mono mt-1 pr-2">Words: 0 | Chars: 0 | Lines: 1</div>
               <!-- Auto-complete popup -->
               <div id="autocomplete-popup" class="absolute left-4 top-12 w-64 editor-autocomplete-list rounded-lg hidden font-mono text-xs max-h-40 overflow-y-auto"></div>
             </div>
@@ -2409,8 +2525,17 @@ async function renderEditView(container: HTMLElement) {
   }
 
   // Live Markdown Preview
+  
   const updatePreview = () => {
     const markdown = textarea.value;
+    const statsEl = document.getElementById('editor-stats');
+    if (statsEl) {
+      const words = markdown.split(/\s+/).filter(w => w.length > 0).length;
+      const chars = markdown.length;
+      const lines = markdown.split('\n').length;
+      statsEl.innerText = `Words: ${words} | Chars: ${chars} | Lines: ${lines}`;
+    }
+
     if (markdown.trim().length === 0) {
       previewBox.innerHTML = `<span class="text-slate-600 font-mono text-xs">No input content.</span>`;
       return;
@@ -3630,19 +3755,44 @@ async function renderTagColorManager() {
     html += `
       <div class="flex items-center justify-between p-2 bg-slate-950/40 border border-slate-800 rounded">
         <span class="text-xs font-mono text-slate-400">#${escapeHtml(tag)}</span>
-        <select class="tag-color-select bg-slate-900 border border-slate-850 text-xs font-mono text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-teal-500 cursor-pointer" data-tag="${escapeHtml(tag)}">
+        <div class="flex gap-2 items-center">
+          <button class="rename-tag-btn px-2 py-1 bg-slate-900 border border-slate-700 text-xs text-blue-400 hover:text-blue-300 rounded" data-tag="${escapeHtml(tag)}">Rename</button>
+          <select class="tag-color-select bg-slate-900 border border-slate-850 text-xs font-mono text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-teal-500 cursor-pointer" data-tag="${escapeHtml(tag)}"> border border-slate-850 text-xs font-mono text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-teal-500 cursor-pointer" data-tag="${escapeHtml(tag)}">
           <option value="slate" ${activeColor === 'slate' ? 'selected' : ''}>SLATE GREY</option>
           <option value="emerald" ${activeColor === 'emerald' ? 'selected' : ''}>EMERALD GREEN</option>
           <option value="blue" ${activeColor === 'blue' ? 'selected' : ''}>BLUE TEAM</option>
           <option value="red" ${activeColor === 'red' ? 'selected' : ''}>RED TEAM</option>
           <option value="amber" ${activeColor === 'amber' ? 'selected' : ''}>AMBER CAUTION</option>
         </select>
+        </div>
       </div>
     `;
   }
   html += `</div>`;
   managerDiv.innerHTML = html;
   
+  
+  const renameBtns = managerDiv.querySelectorAll('.rename-tag-btn');
+  renameBtns.forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const oldTag = (e.currentTarget as HTMLButtonElement).getAttribute('data-tag')!;
+      const newTag = prompt(`Rename tag "#${oldTag}" to:`);
+      if (newTag && newTag.trim() && newTag !== oldTag) {
+        const cleanNewTag = newTag.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+        if (cleanNewTag.length > 0) {
+          for (const page of wikiPagesList) {
+            if (page.tags.includes(oldTag)) {
+              page.tags = page.tags.map(t => t === oldTag ? cleanNewTag : t);
+              await savePageSecure(page);
+            }
+          }
+          logSecurityEvent('TAG_RENAME', `Renamed tag ${oldTag} to ${cleanNewTag}`);
+          await renderLayout();
+        }
+      }
+    });
+  });
+
   const selects = managerDiv.querySelectorAll('.tag-color-select');
   selects.forEach(select => {
     select.addEventListener('change', async (e) => {
@@ -3959,6 +4109,11 @@ function renderSystemView(container: HTMLElement) {
   // Export database JSON handler
   exportBtn.addEventListener('click', async () => {
     const pagesToExport = getScopedPages();
+    const attachmentsToExport = await getAllAttachments();
+    const exportPayload = {
+      pages: pagesToExport,
+      attachments: attachmentsToExport
+    };
     const password = prompt('Secure Backup: Enter a password to encrypt this database backup file (leave blank for plain JSON):');
     let finalBlob: Blob;
     let filename = `secops-wiki-backup-${Date.now()}.json`;
@@ -3966,7 +4121,7 @@ function renderSystemView(container: HTMLElement) {
     if (password) {
       try {
         const key = await deriveKey(password);
-        const dataStr = JSON.stringify(pagesToExport, null, 2);
+        const dataStr = JSON.stringify(exportPayload, null, 2);
         const ciphertext = await encryptText(dataStr, key);
         const encryptedBackup = {
           encrypted: true,
@@ -3984,7 +4139,7 @@ function renderSystemView(container: HTMLElement) {
       const plaintextBackup = {
         encrypted: false,
         schemaVersion: 4,
-        payload: pagesToExport
+        payload: exportPayload
       };
       finalBlob = new Blob([JSON.stringify(plaintextBackup, null, 2)], { type: 'application/json' });
     }

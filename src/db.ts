@@ -335,6 +335,22 @@ export async function getAttachment(id: string): Promise<Attachment | null> {
   });
 }
 
+
+export async function getAllAttachments(): Promise<Attachment[]> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const transaction = db.transaction('attachments', 'readonly');
+      const store = transaction.objectStore('attachments');
+      const request = store.getAll();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result || []);
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
 export async function deleteAttachment(id: string): Promise<void> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
