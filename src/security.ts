@@ -48,14 +48,43 @@ function incrementSanitizationCount() {
 export function renderMarkdownSecure(content: string): string {
   incrementSanitizationCount();
   const rawHtml = marked.parse(content) as string;
-  return DOMPurify.sanitize(rawHtml, {
+  
+  DOMPurify.addHook('uponSanitizeElement', (node) => {
+    if (node instanceof Element) {
+      const tagName = node.tagName.toLowerCase();
+      if (tagName === 'video' || tagName === 'audio' || tagName === 'iframe' || tagName === 'source' || tagName === 'img') {
+        const srcAttr = node.getAttribute('src');
+        if (srcAttr) {
+          const url = srcAttr.trim().toLowerCase();
+          const isSafe = url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('attachment:') || url.startsWith('/') || url.startsWith('./') || url.startsWith('../');
+          if (!isSafe) {
+            node.setAttribute('src', '#');
+            console.warn('SECURITY BLOCK: Prevented connection to remote source URL:', srcAttr);
+          }
+        }
+        
+        if (tagName === 'iframe') {
+          node.setAttribute('sandbox', 'allow-scripts');
+        }
+      }
+    }
+  });
+
+  const clean = DOMPurify.sanitize(rawHtml, {
     ALLOWED_TAGS: [
       'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'hr', 'a', 'span',
       'ul', 'ol', 'li', 'strong', 'em', 'code', 'pre', 'blockquote',
-      'table', 'thead', 'tbody', 'tr', 'th', 'td', 'div'
+      'table', 'thead', 'tbody', 'tr', 'th', 'td', 'div', 'img', 'input',
+      'video', 'audio', 'iframe', 'source'
     ],
-    ALLOWED_ATTR: ['href', 'target', 'rel', 'class', 'id', 'align'],
+    ALLOWED_ATTR: [
+      'href', 'target', 'rel', 'class', 'id', 'align', 'src', 'alt', 
+      'type', 'checked', 'disabled', 'controls', 'sandbox', 'width', 'height'
+    ],
   });
+
+  DOMPurify.removeHook('uponSanitizeElement');
+  return clean;
 }
 
 /**
@@ -204,3 +233,15 @@ export async function decryptText(encryptedStr: string, key: CryptoKey): Promise
   
   return new TextDecoder().decode(decrypted);
 }
+
+/**
+ * Computes a SHA-256 integrity signature for a page.
+ */
+export async function computePageSignature(page: { slug: string; title: string; content: string; updatedAt: number; tags: string[] }): Promise<string> {
+  const canonical = `${page.slug}|${page.title}|${page.content}|${page.updatedAt}|${page.tags.join(',')}|secops-integrity-salt-2026`;
+  const msgBuffer = new TextEncoder().encode(canonical);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+

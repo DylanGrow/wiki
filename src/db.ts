@@ -6,6 +6,11 @@ export interface WikiPage {
   tags: string[];
   isSystem?: boolean;
   isEncrypted?: boolean;
+  signature?: string;
+  isEncryptedAtRest?: boolean;
+  encryptedData?: string;
+  classification?: 'UNCLASSIFIED' | 'CONFIDENTIAL' | 'SECRET' | 'TOP SECRET';
+  expiresAt?: number;
 }
 
 export interface PageRevision {
@@ -15,18 +20,31 @@ export interface PageRevision {
   content: string;
   updatedAt: number;
   isEncrypted?: boolean;
+  isEncryptedAtRest?: boolean;
+  encryptedData?: string;
+  tags?: string[];
+  classification?: 'UNCLASSIFIED' | 'CONFIDENTIAL' | 'SECRET' | 'TOP SECRET';
+  signature?: string;
 }
 
 const DB_NAME = 'secops-wiki-db';
 const STORE_NAME = 'pages';
 const REV_STORE_NAME = 'revisions';
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 
 function getDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        alert('SECURITY NOTICE: The database schema is being updated by another active session. This connection has been closed to prevent blocking. Please reload to resume.');
+        window.location.reload();
+      };
+      resolve(db);
+    };
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -35,6 +53,15 @@ function getDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(REV_STORE_NAME)) {
         const revStore = db.createObjectStore(REV_STORE_NAME, { keyPath: 'id' });
         revStore.createIndex('slug', 'slug', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('tagColors')) {
+        db.createObjectStore('tagColors', { keyPath: 'tag' });
+      }
+      if (!db.objectStoreNames.contains('attachments')) {
+        db.createObjectStore('attachments', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('auditLogs')) {
+        db.createObjectStore('auditLogs', { keyPath: 'id' });
       }
     };
   });
@@ -132,6 +159,17 @@ export async function deletePageRevisions(slug: string): Promise<void> {
   });
 }
 
+export async function deleteRevision(id: string): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(REV_STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(REV_STORE_NAME);
+    const request = store.delete(id);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
 const DEFAULT_PAGES: WikiPage[] = [
   {
     slug: 'home',
@@ -190,4 +228,193 @@ export async function seedDatabase(): Promise<void> {
       await savePage(page);
     }
   }
+}
+
+export async function clearDatabase(): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const stores = [STORE_NAME, REV_STORE_NAME, 'tagColors', 'attachments', 'auditLogs'];
+    const transaction = db.transaction(stores, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const revStore = transaction.objectStore(REV_STORE_NAME);
+    const tagColorsStore = transaction.objectStore('tagColors');
+    const attachmentsStore = transaction.objectStore('attachments');
+    const auditLogsStore = transaction.objectStore('auditLogs');
+    
+    store.clear();
+    revStore.clear();
+    tagColorsStore.clear();
+    attachmentsStore.clear();
+    auditLogsStore.clear();
+    
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+export interface TagColor {
+  tag: string;
+  color: string; // 'slate' | 'emerald' | 'blue' | 'red' | 'amber'
+}
+
+export async function getTagColors(): Promise<TagColor[]> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const transaction = db.transaction('tagColors', 'readonly');
+      const store = transaction.objectStore('tagColors');
+      const request = store.getAll();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result || []);
+    } catch (e) {
+      // If store doesn't exist yet, return empty list
+      resolve([]);
+    }
+  });
+}
+
+export async function saveTagColor(tagColor: TagColor): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('tagColors', 'readwrite');
+    const store = transaction.objectStore('tagColors');
+    const request = store.put(tagColor);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function deleteTagColor(tag: string): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('tagColors', 'readwrite');
+    const store = transaction.objectStore('tagColors');
+    const request = store.delete(tag);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export interface Attachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  data: string; // Base64 ciphertext (ivHex:ciphertextBase64)
+}
+
+export interface AuditLog {
+  id: string;
+  timestamp: number;
+  event: string;
+  details: string;
+}
+
+export async function saveAttachment(att: Attachment): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('attachments', 'readwrite');
+    const store = transaction.objectStore('attachments');
+    const request = store.put(att);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function getAttachment(id: string): Promise<Attachment | null> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const transaction = db.transaction('attachments', 'readonly');
+      const store = transaction.objectStore('attachments');
+      const request = store.get(id);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result || null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export async function deleteAttachment(id: string): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('attachments', 'readwrite');
+    const store = transaction.objectStore('attachments');
+    const request = store.delete(id);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function saveAuditLog(log: AuditLog): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const transaction = db.transaction('auditLogs', 'readwrite');
+      const store = transaction.objectStore('auditLogs');
+      const request = store.put(log);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve();
+    } catch (e) {
+      console.error('Audit logging transaction failed:', e);
+      resolve(); // Do not block application on log failure
+    }
+  });
+}
+
+export async function getAllAuditLogs(): Promise<AuditLog[]> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    try {
+      const transaction = db.transaction('auditLogs', 'readonly');
+      const store = transaction.objectStore('auditLogs');
+      const request = store.getAll();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const results = request.result || [];
+        results.sort((a, b) => b.timestamp - a.timestamp);
+        resolve(results);
+      };
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+export async function clearAuditLogs(): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('auditLogs', 'readwrite');
+    const store = transaction.objectStore('auditLogs');
+    const request = store.clear();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function pruneAuditLogs(daysToKeep: number): Promise<void> {
+  const db = await getDB();
+  const threshold = Date.now() - (daysToKeep * 24 * 60 * 60 * 1000);
+  return new Promise((resolve, reject) => {
+    try {
+      const transaction = db.transaction('auditLogs', 'readwrite');
+      const store = transaction.objectStore('auditLogs');
+      const request = store.openCursor();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          const log = cursor.value as AuditLog;
+          if (log.timestamp < threshold) {
+            cursor.delete();
+          }
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+    } catch (e) {
+      reject(e);
+    }
+  });
 }

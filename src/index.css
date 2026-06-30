@@ -410,3 +410,114 @@ html.light-theme textarea::placeholder {
   border: 1px solid rgba(148, 163, 184, 0.3);
 }
 
+/* Print watermarks and banners screen state */
+.print-watermark,
+.print-banner-top,
+.print-banner-bottom {
+  display: none;
+}
+
+/* Visual Diff Inspector styles */
+.diff-line-added {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+.diff-line-removed {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+.diff-line-unchanged {
+  color: #94a3b8;
+}
+
+/* Print Mode Adjustments */
+@media print {
+  .print-watermark {
+    display: block !important;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-45deg);
+    font-size: 4.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-weight: 900;
+    color: rgba(0, 0, 0, 0.05) !important;
+    z-index: -9999;
+    pointer-events: none;
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.4rem;
+  }
+  
+  .print-banner-top,
+  .print-banner-bottom {
+    display: block !important;
+    position: fixed;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: bold;
+    background: #f1f5f9 !important;
+    color: black !important;
+    border: 1px solid #cbd5e1;
+    padding: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.15rem;
+    z-index: 9999;
+  }
+  
+  .print-banner-top {
+    top: 0;
+  }
+  
+  .print-banner-bottom {
+    bottom: 0;
+  }
+  
+  body, .wiki-content {
+    padding-top: 50px !important;
+    padding-bottom: 50px !important;
+  }
+}
+
+/* Hierarchical Tag Tree EXPLORER styling */
+.tree-folder {
+  margin-top: 2px;
+}
+.tree-folder-header {
+  transition: background-color 0.15s ease;
+}
+.tree-folder-header:hover {
+  background-color: rgba(20, 184, 166, 0.08);
+}
+.tree-folder-icon {
+  width: 10px;
+  text-align: center;
+}
+
+/* Drawing Canvas crosshair */
+.cursor-crosshair {
+  cursor: crosshair;
+}
+
+/* Security classification borders */
+.classification-glow-topsecret {
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.12), inset 0 0 15px rgba(239, 68, 68, 0.05) !important;
+  border-color: rgba(239, 68, 68, 0.25) !important;
+}
+.classification-glow-secret {
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.12), inset 0 0 15px rgba(245, 158, 11, 0.05) !important;
+  border-color: rgba(245, 158, 11, 0.25) !important;
+}
+.classification-glow-confidential {
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.12), inset 0 0 15px rgba(59, 130, 246, 0.05) !important;
+  border-color: rgba(59, 130, 246, 0.25) !important;
+}
+.classification-glow-unclassified {
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.12), inset 0 0 15px rgba(16, 185, 129, 0.05) !important;
+  border-color: rgba(16, 185, 129, 0.25) !important;
+}
+
+

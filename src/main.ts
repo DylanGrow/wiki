@@ -1,5 +1,5 @@
-import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, saveRevision, getPageRevisions } from './db';
-import { renderMarkdownSecure, validateImportedPage, escapeHtml, getSanitizationCount, sanitizeUnicode, deriveKey, encryptText, decryptText } from './security';
+import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, PageRevision, saveRevision, getPageRevisions, deleteRevision, getTagColors, saveTagColor, clearDatabase, Attachment, AuditLog, saveAttachment, getAttachment, saveAuditLog, getAllAuditLogs, clearAuditLogs, pruneAuditLogs } from './db';
+import { renderMarkdownSecure, validateImportedPage, escapeHtml, getSanitizationCount, sanitizeUnicode, deriveKey, encryptText, decryptText, computePageSignature } from './security';
 import './index.css';
 
 // State Management
@@ -13,6 +13,224 @@ let deferredInstallPrompt: any = null;
 let networkStatus = navigator.onLine ? 'SECURE_LINK' : 'OFFLINE_CACHE';
 let currentTheme = localStorage.getItem('secops-wiki-theme') || 'dark';
 
+// Settings configuration states
+let maskEncryptedTitles = localStorage.getItem('secops-wiki-mask-encrypted') === 'true';
+let isSplitScreen = localStorage.getItem('secops-wiki-split-screen') !== 'false';
+let globalTagColors: { [tag: string]: string } = {};
+
+let activeMasterKey: CryptoKey | null = null;
+
+async function logSecurityEvent(event: string, details: string) {
+  const log: AuditLog = {
+    id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+    timestamp: Date.now(),
+    event,
+    details
+  };
+  await saveAuditLog(log);
+}
+
+async function getPageSecure(slug: string): Promise<WikiPage | null> {
+  const page = await getPage(slug);
+  if (!page) return null;
+  
+  if (page.isEncryptedAtRest && page.encryptedData) {
+    if (!activeMasterKey) {
+      return {
+        slug: page.slug,
+        title: '[DATABASE LOCKED]',
+        content: 'Master passphrase required to unlock this database record.',
+        tags: [],
+        isSystem: page.isSystem,
+        isEncrypted: false,
+        updatedAt: page.updatedAt
+      };
+    }
+    try {
+      const decryptedStr = await decryptText(page.encryptedData, activeMasterKey);
+      const decryptedData = JSON.parse(decryptedStr);
+      return {
+        slug: page.slug,
+        title: decryptedData.title,
+        content: decryptedData.content,
+        tags: decryptedData.tags,
+        isSystem: page.isSystem,
+        isEncrypted: decryptedData.isEncrypted,
+        signature: decryptedData.signature,
+        updatedAt: decryptedData.updatedAt
+      };
+    } catch (err) {
+      console.error('Failed to decrypt page at rest:', err);
+      return null;
+    }
+  }
+  return page;
+}
+
+async function savePageSecure(page: WikiPage): Promise<void> {
+  const isDbEncrypted = localStorage.getItem('secops-wiki-db-encrypted') === 'true';
+  if (isDbEncrypted && activeMasterKey) {
+    const plaintextData = {
+      title: page.title,
+      content: page.content,
+      tags: page.tags,
+      isEncrypted: page.isEncrypted,
+      signature: page.signature,
+      updatedAt: page.updatedAt
+    };
+    const encryptedStr = await encryptText(JSON.stringify(plaintextData), activeMasterKey);
+    const encryptedPage: WikiPage = {
+      slug: page.slug,
+      title: '[REDACTED AT REST]',
+      content: '[REDACTED AT REST]',
+      tags: [],
+      isSystem: page.isSystem,
+      isEncryptedAtRest: true,
+      encryptedData: encryptedStr,
+      updatedAt: page.updatedAt
+    };
+    await savePage(encryptedPage);
+  } else {
+    await savePage(page);
+  }
+  localStorage.setItem('secops-wiki-last-update', Date.now().toString());
+}
+
+async function getAllPagesSecure(): Promise<WikiPage[]> {
+  const rawPages = await getAllPages();
+  const pages: WikiPage[] = [];
+  for (const page of rawPages) {
+    const securePage = await getPageSecure(page.slug);
+    if (securePage) {
+      pages.push(securePage);
+    }
+  }
+  return pages;
+}
+
+async function cacheTagColors() {
+  try {
+    const list = await getTagColors();
+    globalTagColors = {};
+    list.forEach(c => {
+      globalTagColors[c.tag] = c.color;
+    });
+  } catch {
+    globalTagColors = {};
+  }
+}
+
+function renderTagBadge(tag: string): string {
+  const color = globalTagColors[tag] || 'slate';
+  let colorClass = 'bg-slate-950/20 text-slate-400 border-slate-900/30'; // default slate
+  
+  if (color === 'emerald') {
+    colorClass = 'bg-emerald-950/20 text-emerald-400 border-emerald-900/30';
+  } else if (color === 'blue') {
+    colorClass = 'bg-blue-950/20 text-blue-400 border-blue-900/30';
+  } else if (color === 'red') {
+    colorClass = 'bg-red-950/20 text-red-400 border-red-900/30';
+  } else if (color === 'amber') {
+    colorClass = 'bg-amber-950/20 text-amber-400 border-amber-900/30';
+  }
+  
+  return `
+    <span class="text-[10px] font-mono px-2 py-0.5 rounded border ${colorClass}">#${escapeHtml(tag)}</span>
+  `;
+}
+
+function autolinkDOMTextNodes(element: HTMLElement) {
+  const pagesToLink = wikiPagesList.filter(p => p.slug !== currentPageSlug);
+  if (pagesToLink.length === 0) return;
+  
+  pagesToLink.sort((a, b) => b.title.length - a.title.length);
+  
+  const escapeRegex = (s: string) => s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+  
+  const textNodes: Node[] = [];
+  const walk = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => {
+      let parent = node.parentElement;
+      while (parent && parent !== element) {
+        const tagName = parent.tagName.toLowerCase();
+        if (tagName === 'a' || tagName === 'code' || tagName === 'pre') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        parent = parent.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  
+  let currentNode = walk.nextNode();
+  while (currentNode) {
+    textNodes.push(currentNode);
+    currentNode = walk.nextNode();
+  }
+  
+  for (const node of textNodes) {
+    const parent = node.parentNode;
+    if (!parent) continue;
+    
+    let text = node.nodeValue || '';
+    
+    for (const page of pagesToLink) {
+      const isRedacted = page.isEncrypted && !activeCryptoKey && maskEncryptedTitles;
+      if (isRedacted) continue;
+      
+      const titleEsc = escapeRegex(page.title);
+      const slugEsc = escapeRegex(page.slug);
+      
+      const pattern = new RegExp(`\\b(${titleEsc}|${slugEsc})\\b`, 'i');
+      const match = pattern.exec(text);
+      
+      if (match) {
+        const matchedText = match[0];
+        const matchIdx = match.index;
+        
+        const beforeText = text.substring(0, matchIdx);
+        const afterText = text.substring(matchIdx + matchedText.length);
+        
+        const beforeNode = document.createTextNode(beforeText);
+        const linkNode = document.createElement('a');
+        linkNode.href = `#/page/${page.slug}`;
+        linkNode.className = 'autolink text-teal-400 hover:text-teal-350 underline decoration-dotted transition';
+        linkNode.textContent = matchedText;
+        const afterNode = document.createTextNode(afterText);
+        
+        parent.insertBefore(beforeNode, node);
+        parent.insertBefore(linkNode, node);
+        parent.insertBefore(afterNode, node);
+        parent.removeChild(node);
+        break;
+      }
+    }
+  }
+}
+
+function updateRecentBreadcrumbs(slug: string) {
+  if (!slug || slug === 'system' || slug === 'graph') return;
+  let recent: string[] = [];
+  try {
+    recent = JSON.parse(sessionStorage.getItem('secops-wiki-breadcrumbs') || '[]');
+  } catch {}
+  if (!Array.isArray(recent)) recent = [];
+  
+  recent = recent.filter(s => s !== slug);
+  recent.unshift(slug);
+  if (recent.length > 5) {
+    recent = recent.slice(0, 5);
+  }
+  sessionStorage.setItem('secops-wiki-breadcrumbs', JSON.stringify(recent));
+}
+
+function getPageTitle(slug: string): string {
+  const p = wikiPagesList.find(x => x.slug === slug);
+  if (!p) return slug;
+  const isRedacted = p.isEncrypted && !activeCryptoKey && maskEncryptedTitles;
+  return isRedacted ? `[REDACTED CORE]` : p.title;
+}
+
 // Extended State Management (Encryption, Command Palette, Autocomplete)
 let activeCryptoKey: CryptoKey | null = null;
 let isCommandPaletteOpen = false;
@@ -21,24 +239,57 @@ let isAutocompleteActive = false;
 let autocompleteStartIndex = -1;
 let autocompleteQuery = '';
 
+// Decryption lockout helpers
+function getFailedDecryptAttempts(): number {
+  return parseInt(localStorage.getItem('secops-decrypt-failed-attempts') || '0', 10);
+}
+function setFailedDecryptAttempts(val: number) {
+  localStorage.setItem('secops-decrypt-failed-attempts', val.toString());
+}
+function getDecryptLockoutTime(): number {
+  return parseInt(localStorage.getItem('secops-decrypt-lockout-until') || '0', 10);
+}
+function setDecryptLockoutTime(val: number) {
+  localStorage.setItem('secops-decrypt-lockout-until', val.toString());
+}
+function isDecryptionLockedOut(): boolean {
+  return Date.now() < getDecryptLockoutTime();
+}
+function handleFailedDecryptionAttempt() {
+  const attempts = getFailedDecryptAttempts() + 1;
+  setFailedDecryptAttempts(attempts);
+  if (attempts >= 3) {
+    const cooldown = 5 * 60 * 1000 * Math.pow(2, attempts - 3);
+    setDecryptLockoutTime(Date.now() + cooldown);
+  }
+}
+function handleSuccessfulDecryption() {
+  setFailedDecryptAttempts(0);
+  setDecryptLockoutTime(0);
+}
+
+// Inactivity lock logic
 let inactivityTimeoutId: any = null;
 
 function resetInactivityTimeout() {
   if (inactivityTimeoutId) {
     clearTimeout(inactivityTimeoutId);
   }
-  // 15 minutes = 900,000 ms
+  const timeoutMin = parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10);
+  if (timeoutMin === 0) {
+    return;
+  }
   inactivityTimeoutId = setTimeout(() => {
     if (activeCryptoKey) {
       activeCryptoKey = null;
-      alert('SECURITY TIMEOUT: Session idle for 15 minutes. Passphrase keys wiped from memory.');
+      alert(`SECURITY TIMEOUT: Session idle for ${timeoutMin} minutes. Passphrase keys wiped from memory.`);
       if (window.location.hash.startsWith('#/page/')) {
         window.location.hash = '#/page/home';
       } else {
         renderLayout();
       }
     }
-  }, 15 * 60 * 1000);
+  }, timeoutMin * 60 * 1000);
 }
 
 // Bind session activity listeners
@@ -46,6 +297,111 @@ function resetInactivityTimeout() {
   window.addEventListener(eventName, resetInactivityTimeout, { passive: true });
 });
 resetInactivityTimeout();
+
+// Clipboard wiping security layer for encrypted pages
+let clipboardWipeTimeoutId: any = null;
+
+document.addEventListener('copy', () => {
+  const isEncryptedPage = document.body.classList.contains('encrypted-page-active');
+  if (isEncryptedPage) {
+    const selectedText = window.getSelection()?.toString() || '';
+    if (selectedText) {
+      scheduleClipboardWipe();
+    }
+  } else {
+    // Cancel wipe if user copies non-encrypted content
+    if (clipboardWipeTimeoutId) {
+      clearTimeout(clipboardWipeTimeoutId);
+      clipboardWipeTimeoutId = null;
+    }
+  }
+});
+
+function scheduleClipboardWipe() {
+  if (clipboardWipeTimeoutId) {
+    clearTimeout(clipboardWipeTimeoutId);
+  }
+  clipboardWipeTimeoutId = setTimeout(async () => {
+    try {
+      await navigator.clipboard.writeText('[SECURE WIPE: Decrypted secret cleared from clipboard]');
+      showClipboardWipeToast();
+      await logSecurityEvent('CLIPBOARD_WIPE', 'Automatically cleared decrypted secret from clipboard.');
+    } catch (err) {
+      console.warn('Clipboard wipe failed:', err);
+    }
+    clipboardWipeTimeoutId = null;
+  }, 30000);
+}
+
+function showClipboardWipeToast() {
+  const oldToast = document.getElementById('clipboard-wipe-toast');
+  if (oldToast) oldToast.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'clipboard-wipe-toast';
+  toast.className = 'fixed bottom-4 left-4 z-50 glass-panel border border-red-500/30 p-3 rounded-xl shadow-xl font-mono text-[10px] text-red-400 select-none animate-fade-in';
+  toast.innerHTML = '⚠️ SECURITY WIPE: Decrypted secret cleared from clipboard.';
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
+    setTimeout(() => toast.remove(), 500);
+  }, 3000);
+}
+
+function validatePasswordStrength(password: string): { valid: boolean; message: string } {
+  if (password.length < 8) {
+    return { valid: false, message: 'Password must be at least 8 characters long.' };
+  }
+  let hasUpper = false;
+  let hasLower = false;
+  let hasDigit = false;
+  let hasSpecial = false;
+  const specials = /[!@#$%^&*(),.?":{}|<>_+\\-]/;
+  for (const char of password) {
+    if (char >= 'A' && char <= 'Z') hasUpper = true;
+    else if (char >= 'a' && char <= 'z') hasLower = true;
+    else if (char >= '0' && char <= '9') hasDigit = true;
+    else if (specials.test(char)) hasSpecial = true;
+  }
+  if (!hasUpper || !hasLower || !hasDigit || !hasSpecial) {
+    return {
+      valid: false,
+      message: 'Password must include uppercase, lowercase, numbers, and special symbols (!@#$%^&*, etc.).'
+    };
+  }
+  return { valid: true, message: '' };
+}
+
+// Quick-Lock Global Hotkeys
+function activateQuickLock() {
+  if (activeCryptoKey) {
+    activeCryptoKey = null;
+    alert('QUICK LOCK: In-memory session keys cleared. Documents locked.');
+    window.location.hash = '#/page/home';
+    renderLayout();
+  }
+}
+let escPressCount = 0;
+let escPressTimer: any = null;
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    escPressCount++;
+    if (escPressTimer) clearTimeout(escPressTimer);
+    if (escPressCount >= 3) {
+      escPressCount = 0;
+      activateQuickLock();
+    } else {
+      escPressTimer = setTimeout(() => {
+        escPressCount = 0;
+      }, 1000);
+    }
+  }
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'l') {
+    e.preventDefault();
+    activateQuickLock();
+  }
+});
+
 
 function applyTheme() {
   const html = document.documentElement;
@@ -236,6 +592,16 @@ syncChannel.onmessage = async (event) => {
   }
 };
 
+let lastKnownUpdate = localStorage.getItem('secops-wiki-last-update') || '0';
+window.addEventListener('focus', async () => {
+  const currentUpdate = localStorage.getItem('secops-wiki-last-update') || '0';
+  if (currentUpdate !== lastKnownUpdate) {
+    lastKnownUpdate = currentUpdate;
+    await refreshPagesList();
+    await renderLayout();
+  }
+});
+
 // Session Lock State
 let idleTimer: any = null;
 const IDLE_TIMEOUT = 15 * 60 * 1000; // 15 minutes
@@ -250,23 +616,39 @@ async function init() {
   
   // Seed initial pages if DB is empty
   await seedDatabase();
+  await cacheTagColors();
+  try {
+    await checkAndPurgeExpiredPages();
+  } catch (err) {
+    console.warn('Failed to purge expired pages on init:', err);
+  }
+  try {
+    await pruneAuditLogs(30);
+  } catch (err) {
+    console.warn('Failed to auto-prune audit logs on init:', err);
+  }
   
   // Register Service Worker for PWA
   registerServiceWorker();
 
-  // Load pages for the sidebar
-  await refreshPagesList();
+  // Check if database is encrypted and locked
+  const isDbEncrypted = localStorage.getItem('secops-wiki-db-encrypted') === 'true';
+  if (isDbEncrypted && !activeMasterKey) {
+    showMasterUnlockScreen();
+  } else {
+    // Load pages for the sidebar
+    await refreshPagesList();
 
-  // Setup session locking
-  setupIdleTracker();
+    // Setup session locking
+    setupIdleTracker();
 
-  // Setup command palette modal
-  setupCommandPalette();
+    // Setup command palette modal
+    setupCommandPalette();
 
-  // Handle routing
-  window.addEventListener('hashchange', handleRoute);
-  window.addEventListener('online', updateNetworkStatus);
-  window.addEventListener('offline', updateNetworkStatus);
+    // Handle routing
+    window.addEventListener('hashchange', handleRoute);
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
   
   // PWA Install Prompt Listener
   window.addEventListener('beforeinstallprompt', (e) => {
@@ -286,10 +668,33 @@ async function init() {
       e.preventDefault();
       toggleCommandPalette();
     }
+    if (e.ctrlKey && e.altKey && (e.key === 'e' || e.key === 'E')) {
+      e.preventDefault();
+      if (isEditing) {
+        const form = document.getElementById('edit-page-form') as HTMLFormElement;
+        if (form) {
+          form.requestSubmit();
+        }
+      } else {
+        if (currentPageSlug && currentPageSlug !== 'home' && currentPageSlug !== 'system') {
+          window.location.hash = `#/edit/${currentPageSlug}`;
+        }
+      }
+    }
   });
 
   // Initial Route Resolution
   handleRoute();
+  
+  // Expiration daemon periodic check every 30 seconds
+  setInterval(async () => {
+    try {
+      await checkAndPurgeExpiredPages();
+    } catch (err) {
+      console.warn('Failed periodic expired page purge:', err);
+    }
+  }, 30000);
+  }
 }
 
 function resetIdleTimer() {
@@ -299,9 +704,137 @@ function resetIdleTimer() {
 
 function lockSession() {
   const lockScreen = document.getElementById('idle-lock-screen');
-  if (lockScreen) {
-    lockScreen.classList.remove('hidden');
+  if (!lockScreen) return;
+  
+  const isDbEncrypted = localStorage.getItem('secops-wiki-db-encrypted') === 'true';
+  if (isDbEncrypted) {
+    activeMasterKey = null;
+    activeCryptoKey = null;
+    renderLayout().catch(() => {});
   }
+  
+  const hasBioGate = localStorage.getItem('secops-wiki-webauthn-gate') === 'true';
+  
+  if (isDbEncrypted) {
+    lockScreen.innerHTML = `
+      <div class="glass-panel border border-slate-800 p-8 rounded-xl max-w-sm w-full text-center glow-border shadow-2xl">
+        <svg class="w-12 h-12 text-red-500 mx-auto mb-4 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+        <h2 class="text-lg font-bold font-mono text-white mb-2 uppercase tracking-wide">TERMINAL_LOCKED</h2>
+        <p class="text-slate-400 text-[10px] font-mono mb-6 leading-relaxed">System locked due to inactivity.<br>Enter master passphrase or use biometrics.</p>
+        
+        <form id="idle-unlock-form" class="space-y-4">
+          <input type="password" id="idle-unlock-password-input" placeholder="ENTER MASTER KEY..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none transition font-mono text-center">
+          <div class="flex gap-2">
+            ${hasBioGate ? `
+              <button type="button" id="idle-unlock-biometric-btn" class="flex-1 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 font-mono text-[10px] uppercase rounded transition hover:text-white flex items-center justify-center gap-1">
+                Biometric
+              </button>
+            ` : ''}
+            <button type="submit" class="flex-1 py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-[10px] uppercase rounded font-bold transition">
+              Unlock
+            </button>
+          </div>
+        </form>
+        <div id="idle-lock-error" class="hidden mt-3 text-[9px] font-mono text-red-400 font-bold uppercase">Invalid credentials.</div>
+      </div>
+    `;
+    
+    const form = lockScreen.querySelector('#idle-unlock-form') as HTMLFormElement;
+    const pwdInput = lockScreen.querySelector('#idle-unlock-password-input') as HTMLInputElement;
+    const errDiv = lockScreen.querySelector('#idle-lock-error') as HTMLElement;
+    const bioBtn = lockScreen.querySelector('#idle-unlock-biometric-btn') as HTMLButtonElement;
+    
+    setTimeout(() => pwdInput?.focus(), 50);
+    
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errDiv.classList.add('hidden');
+      const pwd = pwdInput.value;
+      try {
+        const derivedKey = await deriveKey(pwd);
+        const isCorrect = await verifyMasterKey(derivedKey);
+        if (isCorrect) {
+          activeMasterKey = derivedKey;
+          await refreshPagesList();
+          unlockSession();
+          await renderLayout();
+          await logSecurityEvent('SESSION_RESTORE', 'Restored session via master passphrase.');
+        } else {
+          errDiv.classList.remove('hidden');
+        }
+      } catch {
+        errDiv.classList.remove('hidden');
+      }
+    });
+    
+    if (bioBtn) {
+      bioBtn.addEventListener('click', async () => {
+        errDiv.classList.add('hidden');
+        try {
+          const payload = localStorage.getItem('secops-wiki-webauthn-payload') || '';
+          const challenge = crypto.getRandomValues(new Uint8Array(32));
+          const assertion = await navigator.credentials.get({
+            publicKey: {
+              challenge,
+              rpId: window.location.hostname || "localhost",
+              userVerification: "required",
+              timeout: 60000
+            }
+          });
+          
+          if (assertion) {
+            const credIdBytes = new Uint8Array((assertion as any).rawId);
+            const credIdHex = Array.from(credIdBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+            const saltHex = localStorage.getItem('secops-wiki-webauthn-salt') || '';
+            if (!saltHex) throw new Error('Biometric salt missing.');
+            
+            const combinedEntropy = `${credIdHex}:${saltHex}`;
+            const encKey = await deriveKey(combinedEntropy);
+            const decryptedPwd = await decryptText(payload, encKey);
+            const derivedKey = await deriveKey(decryptedPwd);
+            
+            const isCorrect = await verifyMasterKey(derivedKey);
+            if (isCorrect) {
+              activeMasterKey = derivedKey;
+              await refreshPagesList();
+              unlockSession();
+              await renderLayout();
+              await logSecurityEvent('SESSION_RESTORE_BIOMETRIC', 'Restored session via biometric WebAuthn verification.');
+            } else {
+              errDiv.classList.remove('hidden');
+            }
+          }
+        } catch (err: any) {
+          alert(`Biometric verification failed: ${err.message}`);
+          await logSecurityEvent('WEBAUTHN_FAIL', `Idle lock biometric unlock failed: ${err.message}`);
+        }
+      });
+    }
+  } else {
+    lockScreen.innerHTML = `
+      <div class="glass-panel border border-slate-800 p-8 rounded-xl max-w-sm w-full text-center glow-border shadow-2xl">
+        <svg class="w-12 h-12 text-red-500 mx-auto mb-4 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+        <h2 class="text-lg font-bold font-mono text-white mb-2 uppercase tracking-wide">TERMINAL_LOCKED</h2>
+        <p class="text-slate-400 text-[10px] font-mono mb-6 leading-relaxed">System locked due to inactivity.<br>Click restore to resume your session.</p>
+        <button id="idle-unlock-btn" class="w-full py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-[10px] uppercase font-bold rounded transition">
+          RESTORE SESSION
+        </button>
+      </div>
+    `;
+    
+    const unlockBtn = lockScreen.querySelector('#idle-unlock-btn') as HTMLButtonElement;
+    unlockBtn.addEventListener('click', () => {
+      unlockSession();
+    });
+  }
+  
+  lockScreen.classList.remove('hidden');
 }
 
 function unlockSession() {
@@ -314,37 +847,19 @@ function unlockSession() {
 
 function setupIdleTracker() {
   // Create Lock Screen overlay
-  const lockScreen = document.createElement('div');
-  lockScreen.id = 'idle-lock-screen';
-  lockScreen.className = 'fixed inset-0 bg-[#090d16]/95 backdrop-blur-md z-50 flex flex-col items-center justify-center hidden';
-  lockScreen.innerHTML = `
-    <div class="glass-panel border border-teal-900/30 p-8 rounded-xl max-w-md text-center glow-border">
-      <svg class="w-16 h-16 text-red-500 mx-auto mb-4 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </svg>
-      <h2 class="text-xl font-bold font-mono text-white mb-2 uppercase">TERMINAL_LOCKED</h2>
-      <p class="text-slate-400 text-xs font-mono mb-6">Session locked due to inactivity. Click unlock to restore secure interface access.</p>
-      <button id="idle-unlock-btn" class="px-6 py-2.5 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.2)]">
-        RESTORE SESSION
-      </button>
-    </div>
-  `;
-  document.body.appendChild(lockScreen);
+  let lockScreen = document.getElementById('idle-lock-screen');
+  if (!lockScreen) {
+    lockScreen = document.createElement('div');
+    lockScreen.id = 'idle-lock-screen';
+    lockScreen.className = 'fixed inset-0 bg-[#090d16]/95 backdrop-blur-md z-50 flex flex-col items-center justify-center hidden';
+    document.body.appendChild(lockScreen);
+  }
 
   resetIdleTimer();
-  window.addEventListener('mousemove', resetIdleTimer);
-  window.addEventListener('keydown', resetIdleTimer);
-  window.addEventListener('click', resetIdleTimer);
-  window.addEventListener('scroll', resetIdleTimer);
-  
-  // Bind unlock button
-  document.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest('#idle-unlock-btn');
-    if (btn) {
-      unlockSession();
-    }
-  });
+  window.addEventListener('mousemove', resetIdleTimer, { passive: true });
+  window.addEventListener('keydown', resetIdleTimer, { passive: true });
+  window.addEventListener('click', resetIdleTimer, { passive: true });
+  window.addEventListener('scroll', resetIdleTimer, { passive: true });
 }
 
 function showUpdateToast() {
@@ -431,11 +946,36 @@ function updateNetworkStatus() {
 
 // Fetch pages and update cache list
 async function refreshPagesList() {
-  wikiPagesList = await getAllPages();
+  wikiPagesList = await getAllPagesSecure();
+  await rebuildSearchIndex();
+  lastKnownUpdate = localStorage.getItem('secops-wiki-last-update') || '0';
+}
+
+async function checkAndPurgeExpiredPages() {
+  const pages = await getAllPages();
+  const now = Date.now();
+  let deletedAny = false;
+  for (const page of pages) {
+    if (page.expiresAt && now > page.expiresAt) {
+      await deletePage(page.slug);
+      await logSecurityEvent('SELF_DESTRUCT_EXPIRY', `Intel Entry "${page.title}" (slug: ${page.slug}) has self-destructed due to lease expiration.`);
+      deletedAny = true;
+      if (currentPageSlug === page.slug) {
+        currentPageSlug = 'home';
+        window.location.hash = '#/page/home';
+      }
+    }
+  }
+  if (deletedAny) {
+    await refreshPagesList();
+    await renderLayout();
+    syncChannel.postMessage('refresh');
+  }
 }
 
 // Routing Handler
 async function handleRoute() {
+  await checkAndPurgeExpiredPages();
   const hash = window.location.hash || '#/page/home';
   isEditing = false;
   isNewPage = false;
@@ -459,8 +999,14 @@ async function handleRoute() {
     currentPageSlug = 'system';
   } else if (hash === '#/graph') {
     currentPageSlug = 'graph';
+  } else if (hash.startsWith('#/import-p2p')) {
+    currentPageSlug = 'import-p2p';
   } else {
     currentPageSlug = 'home';
+  }
+
+  if (!isEditing && currentPageSlug && currentPageSlug !== 'system' && currentPageSlug !== 'graph') {
+    updateRecentBreadcrumbs(currentPageSlug);
   }
 
   await renderLayout();
@@ -527,12 +1073,42 @@ function renderSidebarPages(pages: WikiPage[]): string {
 
 function renderPageLink(page: WikiPage): string {
   const isActive = currentPageSlug === page.slug && !isEditing;
+  const isRedacted = page.isEncrypted && !activeCryptoKey && maskEncryptedTitles;
+  const displayTitle = isRedacted ? `[REDACTED CORE]` : page.title;
+  const targetHref = isRedacted ? 'javascript:void(0)' : `#/page/${page.slug}`;
+  const clickHandler = isRedacted ? `onclick="alert('SECURITY WARNING: Document is locked. Enter passphrase to decrypt cores first.');"` : '';
+
+  let snippetHtml = '';
+  if (searchQuery.trim().length > 0) {
+    const isLocked = page.isEncrypted && !activeCryptoKey;
+    const indexedPage = decryptedSearchIndex.find(dp => dp.slug === page.slug) || page;
+    if (!isLocked && indexedPage.content) {
+      const idx = indexedPage.content.toLowerCase().indexOf(searchQuery.toLowerCase());
+      if (idx !== -1) {
+        const start = Math.max(0, idx - 20);
+        const end = Math.min(indexedPage.content.length, idx + searchQuery.length + 30);
+        let snippet = indexedPage.content.substring(start, end);
+        if (start > 0) snippet = '...' + snippet;
+        if (end < indexedPage.content.length) snippet = snippet + '...';
+        
+        const escapedSnippet = escapeHtml(snippet);
+        const regex = new RegExp(`(${searchQuery.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')})`, 'gi');
+        const highlightedSnippet = escapedSnippet.replace(regex, '<span class="bg-teal-950 text-teal-350 px-0.5 rounded font-bold">$1</span>');
+        
+        snippetHtml = `<div class="text-[10px] text-slate-500 font-mono mt-1 pl-4 break-all whitespace-normal leading-normal">${highlightedSnippet}</div>`;
+      }
+    }
+  }
+
   return `
-    <a href="#/page/${page.slug}" class="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-mono transition group ${isActive ? 'bg-teal-950/30 text-teal-400 font-bold border-l-2 border-teal-500' : 'text-slate-450 hover:bg-slate-900/40 hover:text-slate-200'}">
-      <span class="truncate flex items-center gap-1.5">
-        ${page.isEncrypted ? '<span class="text-red-450 text-[9px]">🔒</span>' : '<span class="text-slate-650 group-hover:text-slate-500 text-[9px]">⊙</span>'}
-        ${escapeHtml(page.title)}
-      </span>
+    <a href="${targetHref}" ${clickHandler} class="block px-3 py-2 rounded-lg text-xs font-mono transition group ${isActive ? 'bg-teal-950/30 text-teal-400 font-bold border-l-2 border-teal-500' : 'text-slate-450 hover:bg-slate-900/40 hover:text-slate-200'}">
+      <div class="flex items-center justify-between">
+        <span class="truncate flex items-center gap-1.5">
+          ${page.isEncrypted ? '<span class="text-red-450 text-[9px]">🔒</span>' : '<span class="text-slate-650 group-hover:text-slate-500 text-[9px]">⊙</span>'}
+          ${escapeHtml(displayTitle)}
+        </span>
+      </div>
+      ${snippetHtml}
     </a>
   `;
 }
@@ -545,7 +1121,7 @@ async function renderLayout() {
   let filteredPages = wikiPagesList;
   if (searchQuery.trim().length > 0) {
     filteredPages = filteredPages
-      .map(page => ({ page, score: scoreSearchResult(page, searchQuery) }))
+      .map(page => ({ page, score: scoreSearchResult(decryptedSearchIndex.find(dp => dp.slug === page.slug) || page, searchQuery) }))
       .filter(item => item.score > 0)
       .sort((a, b) => b.score - a.score)
       .map(item => item.page);
@@ -673,6 +1249,13 @@ async function renderLayout() {
               <div class="text-center py-6 text-xs text-slate-650 font-mono">No entries found</div>
             ` : ''}
           </div>
+
+          <div class="px-3 mb-2 mt-6 flex items-center justify-between border-t border-slate-900/60 pt-4 select-none shrink-0">
+            <span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">🏷️ Tag Explorer</span>
+          </div>
+          <div id="tag-tree-container" class="space-y-1 px-1 max-h-48 overflow-y-auto pr-1">
+            ${renderTagTree(buildTagTree(filteredPages))}
+          </div>
         </div>
 
         <!-- Footer Control Center -->
@@ -703,20 +1286,16 @@ async function renderLayout() {
     searchInput.addEventListener('input', (e) => {
       searchQuery = (e.target as HTMLInputElement).value;
       // Trigger dynamic sidebar filter only, preventing whole page redraw to preserve input focus
-      const filtered = wikiPagesList.filter(page => 
+      const filtered = decryptedSearchIndex.filter(page => 
         page.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         page.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
         page.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()))
       );
       const pagesListContainer = document.getElementById('pages-list')!;
-      pagesListContainer.innerHTML = filtered.map(page => `
-        <a href="#/page/${page.slug}" class="flex items-center justify-between px-3 py-2 rounded-lg text-sm transition group ${currentPageSlug === page.slug && !isEditing ? 'bg-teal-950/30 text-teal-400 font-medium border-l-2 border-teal-500' : 'text-slate-400 hover:bg-slate-900/50 hover:text-slate-200'}">
-          <span class="truncate font-mono">${escapeHtml(page.title)}</span>
-          ${page.isSystem ? `
-            <span class="text-[9px] bg-slate-800 text-slate-400 px-1 py-0.5 rounded font-mono uppercase scale-90">SYS</span>
-          ` : ''}
-        </a>
-      `).join('');
+      pagesListContainer.innerHTML = renderSidebarPages(filtered);
+      if (filtered.length === 0) {
+        pagesListContainer.innerHTML = `<div class="text-center py-6 text-xs text-slate-650 font-mono">No entries found</div>`;
+      }
     });
   }
 
@@ -754,8 +1333,14 @@ async function renderLayout() {
           await Promise.all(registrations.map(r => r.unregister()));
         }
 
-        // Force hard reload
-        window.location.href = '/wiki/';
+        // Hardened self-destruct state clearing
+        localStorage.clear();
+        sessionStorage.clear();
+        activeCryptoKey = null;
+
+        // Wipe history stack and redirect
+        window.history.replaceState(null, '', 'about:blank');
+        window.location.replace('about:blank');
       }
     });
   }
@@ -812,6 +1397,77 @@ async function renderLayout() {
     });
   });
 
+  // Bind Tag Tree folder expand/collapse and key events
+  const tagTreeContainer = document.getElementById('tag-tree-container');
+  if (tagTreeContainer) {
+    tagTreeContainer.addEventListener('click', (e) => {
+      const header = (e.target as HTMLElement).closest('.tree-folder-header') as HTMLElement;
+      if (header) {
+        const childrenContainer = header.nextElementSibling as HTMLElement;
+        const icon = header.querySelector('.tree-folder-icon') as HTMLElement;
+        if (childrenContainer) {
+          const isHidden = childrenContainer.classList.toggle('hidden');
+          if (icon) {
+            icon.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(90deg)';
+          }
+        }
+      }
+    });
+
+    tagTreeContainer.addEventListener('keydown', (e) => {
+      const active = document.activeElement as HTMLElement;
+      if (!active || !tagTreeContainer.contains(active)) return;
+      
+      const elements = Array.from(tagTreeContainer.querySelectorAll('.tree-folder-header, .tree-folder-children a')) as HTMLElement[];
+      const visibleElements = elements.filter(el => {
+        let parent = el.parentElement;
+        while (parent && parent !== tagTreeContainer) {
+          if (parent.classList.contains('tree-folder-children') && parent.classList.contains('hidden')) {
+            return false;
+          }
+          parent = parent.parentElement;
+        }
+        return true;
+      });
+      
+      const idx = visibleElements.indexOf(active);
+      if (idx === -1) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const nextIdx = (idx + 1) % visibleElements.length;
+        visibleElements[nextIdx]?.focus();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prevIdx = (idx - 1 + visibleElements.length) % visibleElements.length;
+        visibleElements[prevIdx]?.focus();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        active.click();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (active.classList.contains('tree-folder-header')) {
+          const childrenContainer = active.nextElementSibling as HTMLElement;
+          const icon = active.querySelector('.tree-folder-icon') as HTMLElement;
+          if (childrenContainer && childrenContainer.classList.contains('hidden')) {
+            childrenContainer.classList.remove('hidden');
+            if (icon) icon.style.transform = 'rotate(90deg)';
+          }
+        }
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (active.classList.contains('tree-folder-header')) {
+          const childrenContainer = active.nextElementSibling as HTMLElement;
+          const icon = active.querySelector('.tree-folder-icon') as HTMLElement;
+          if (childrenContainer && !childrenContainer.classList.contains('hidden')) {
+            childrenContainer.classList.add('hidden');
+            if (icon) icon.style.transform = 'rotate(0deg)';
+          }
+        }
+      }
+    });
+  }
+
   // Populate actual view page
   await resolveContentView();
 }
@@ -830,6 +1486,11 @@ async function resolveContentView() {
     return;
   }
 
+  if (currentPageSlug === 'import-p2p') {
+    await renderP2PImportView(contentPortal);
+    return;
+  }
+
   if (isEditing) {
     await renderEditView(contentPortal);
     return;
@@ -840,7 +1501,7 @@ async function resolveContentView() {
 
 // 1. Render Wiki Page Reader View
 async function renderPageView(container: HTMLElement) {
-  const page = await getPage(currentPageSlug);
+  const page = await getPageSecure(currentPageSlug);
 
   if (!page) {
     container.innerHTML = `
@@ -859,7 +1520,7 @@ async function renderPageView(container: HTMLElement) {
   }
 
   // Load Revisions
-  const revisions = await getPageRevisions(page.slug);
+  const revisions = await getPageRevisionsSecure(page.slug);
 
   let displayContent = page.content;
   let isLocked = false;
@@ -877,6 +1538,13 @@ async function renderPageView(container: HTMLElement) {
   }
 
   if (isLocked) {
+    const isLockedOut = isDecryptionLockedOut();
+    let lockoutMessage = '';
+    if (isLockedOut) {
+      const remaining = Math.ceil((getDecryptLockoutTime() - Date.now()) / 1000);
+      lockoutMessage = `<p class="text-red-500 text-xs font-mono font-bold mt-2 animate-pulse uppercase">SECURITY LOCKOUT: Too many failures. Locked out for ${remaining}s.</p>`;
+    }
+
     container.innerHTML = `
       <div class="max-w-md mx-auto my-20 p-6 glass-panel border border-teal-900/30 rounded-xl text-center glow-border select-none">
         <svg class="w-16 h-16 text-teal-500 mx-auto mb-4 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -886,26 +1554,52 @@ async function renderPageView(container: HTMLElement) {
         <h2 class="text-xl font-bold font-mono text-white mb-2 uppercase">DECRYPT_REQUIRED</h2>
         <p class="text-slate-400 text-xs font-mono mb-6">This document payload is encrypted. Enter passphrase to decrypt.</p>
         <form id="decrypt-doc-form" class="space-y-4">
-          <input type="password" id="decrypt-password-input" placeholder="Enter security passphrase..." class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base text-slate-200 focus:outline-none transition font-mono text-center">
-          <button type="submit" class="w-full py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.2)]">
+          <input type="password" id="decrypt-password-input" placeholder="Enter security passphrase..." ${isLockedOut ? 'disabled' : ''} class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base text-slate-200 focus:outline-none transition font-mono text-center disabled:opacity-40 disabled:cursor-not-allowed">
+          <button type="submit" ${isLockedOut ? 'disabled' : ''} class="w-full py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.2)] disabled:opacity-40 disabled:cursor-not-allowed">
             DECRYPT IN-MEMORY
           </button>
         </form>
+        <div id="decrypt-lockout-timer">${lockoutMessage}</div>
       </div>
     `;
+    
+    if (isLockedOut) {
+      const timerId = setInterval(async () => {
+        const remaining = Math.ceil((getDecryptLockoutTime() - Date.now()) / 1000);
+        const timerDiv = document.getElementById('decrypt-lockout-timer');
+        if (remaining <= 0) {
+          clearInterval(timerId);
+          await renderPageView(container);
+        } else if (timerDiv) {
+          timerDiv.innerHTML = `<p class="text-red-500 text-xs font-mono font-bold mt-2 animate-pulse uppercase">SECURITY LOCKOUT: Too many failures. Locked out for ${remaining}s.</p>`;
+        }
+      }, 1000);
+    }
+    
+    setTimeout(() => {
+      const pwdInput = document.getElementById('decrypt-password-input');
+      pwdInput?.focus();
+    }, 50);
     
     const form = document.getElementById('decrypt-doc-form') as HTMLFormElement;
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (isDecryptionLockedOut()) {
+        alert('Security Lockout active.');
+        return;
+      }
       const pwd = (document.getElementById('decrypt-password-input') as HTMLInputElement).value;
       try {
         const key = await deriveKey(pwd);
         // Test decrypt
         await decryptText(page.content, key);
+        handleSuccessfulDecryption();
         activeCryptoKey = key;
         await renderLayout(); // Rerender
       } catch (err) {
+        handleFailedDecryptionAttempt();
         alert('Security Alert: Authentication failed. Invalid security passphrase.');
+        await renderPageView(container); // Refresh to lock inputs immediately
       }
     });
     return;
@@ -916,13 +1610,16 @@ async function renderPageView(container: HTMLElement) {
   const readTime = Math.max(1, Math.round(wordCount / 200));
 
   const rawRenderedContent = renderMarkdownSecure(displayContent);
-  // Highlight search queries
-  const renderedContent = highlightText(rawRenderedContent, searchQuery);
   const updatedDate = new Date(page.updatedAt).toLocaleString();
 
-  // Create temporary container to parse headings for TOC outline
+  // Create temporary container to parse headings and apply autolinking
   const tempDiv = document.createElement('div');
   tempDiv.innerHTML = rawRenderedContent;
+  autolinkDOMTextNodes(tempDiv);
+  const autolinkedHtml = tempDiv.innerHTML;
+  
+  // Highlight search queries
+  const renderedContent = highlightText(autolinkedHtml, searchQuery);
   const articleHeadings = tempDiv.querySelectorAll('h1, h2, h3');
   
   let tocHtml = '';
@@ -949,10 +1646,113 @@ async function renderPageView(container: HTMLElement) {
     `;
   }
 
+  // Parse checklists in the page
+  const uncheckedMatches = displayContent.match(/^(\s*[-*] )\[ \]/gm) || [];
+  const checkedMatches = displayContent.match(/^(\s*[-*] )\[[xX]\]/gm) || [];
+  const totalCheckboxes = uncheckedMatches.length + checkedMatches.length;
+  let checklistProgressHtml = '';
+  if (totalCheckboxes > 0) {
+    const checkedCount = checkedMatches.length;
+    const percentage = Math.round((checkedCount / totalCheckboxes) * 100);
+    const barLength = 10;
+    const filledLength = Math.round((checkedCount / totalCheckboxes) * barLength);
+    const emptyLength = barLength - filledLength;
+    const barString = '█'.repeat(filledLength) + '░'.repeat(emptyLength);
+    
+    checklistProgressHtml = `
+      <div class="glass-panel border border-slate-800/80 p-3 rounded-lg flex items-center justify-between mb-6 text-[10px] sm:text-xs font-mono select-none">
+        <div class="flex items-center gap-2 sm:gap-3">
+          <span class="text-teal-400 font-bold">📋 TASK STATUS:</span>
+          <span class="text-slate-400 font-bold">${barString}</span>
+          <span class="text-teal-400 font-bold">${percentage}%</span>
+        </div>
+        <div class="text-slate-500">
+          ${checkedCount}/${totalCheckboxes} COMPLETED
+        </div>
+      </div>
+    `;
+  }
+
+  // Generate breadcrumb trail
+  let breadcrumbsHtml = '';
+  try {
+    const crumbs: string[] = JSON.parse(sessionStorage.getItem('secops-wiki-breadcrumbs') || '[]');
+    if (crumbs.length > 1) {
+      breadcrumbsHtml = `
+        <div class="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 mb-3 select-none overflow-x-auto whitespace-nowrap pb-1">
+          <span class="text-slate-600 uppercase">RECENT:</span>
+          ${crumbs.map((c, i) => {
+            const title = getPageTitle(c);
+            const isCurrent = c === page.slug;
+            const linkClass = isCurrent ? 'text-teal-400 font-bold' : 'text-slate-450 hover:text-slate-350 transition';
+            const separator = i < crumbs.length - 1 ? '<span class="text-slate-850">/</span>' : '';
+            return `
+              <a href="#/page/${c}" class="${linkClass}">${escapeHtml(title)}</a>
+              ${separator}
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+  } catch {}
+
+  // Verify integrity signature
+  let integrityBadgeHtml = '';
+  if (page.signature) {
+    const computedSig = await computePageSignature(page);
+    if (computedSig !== page.signature) {
+      integrityBadgeHtml = `<span class="px-2 py-0.5 bg-red-950/40 text-red-400 border border-red-900/30 rounded text-[9px] font-mono font-bold animate-pulse">⚠️ INTEGRITY FAIL</span>
+                            <button id="reconcile-integrity-btn" class="ml-1.5 px-2 py-0.5 bg-red-950/50 hover:bg-red-900/40 text-red-400 hover:text-white border border-red-900/30 hover:border-red-700 rounded text-[9px] font-mono font-bold uppercase transition">Reconcile</button>`;
+    } else {
+      integrityBadgeHtml = `<span class="px-2 py-0.5 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 rounded text-[9px] font-mono font-bold">✓ INTEGRITY OK</span>`;
+    }
+  } else {
+    integrityBadgeHtml = `<span class="px-2 py-0.5 bg-amber-950/40 text-amber-400 border border-amber-900/30 rounded text-[9px] font-mono font-bold">⚠️ UNSIGNED</span>`;
+  }
+
+  // Toggle body print layout class
+  if (page.isEncrypted) {
+    document.body.classList.add('encrypted-page-active');
+  } else {
+    document.body.classList.remove('encrypted-page-active');
+  }
+
+  const classification = page.classification || 'UNCLASSIFIED';
+  let bannerColorClass = 'border-emerald-500/20 text-emerald-400 bg-emerald-950/10';
+  let borderGlowClass = 'classification-glow-unclassified';
+  
+  if (classification === 'CONFIDENTIAL') {
+    bannerColorClass = 'border-blue-500/20 text-blue-400 bg-blue-950/10';
+    borderGlowClass = 'classification-glow-confidential';
+  } else if (classification === 'SECRET') {
+    bannerColorClass = 'border-amber-500/20 text-amber-500 bg-amber-950/10';
+    borderGlowClass = 'classification-glow-secret';
+  } else if (classification === 'TOP SECRET') {
+    bannerColorClass = 'border-red-500/30 text-red-500 bg-red-950/10 animate-pulse';
+    borderGlowClass = 'classification-glow-topsecret';
+  }
+  
+  const topBannerHtml = `
+    <div class="border ${bannerColorClass} px-4 py-1.5 rounded-lg text-center text-[10px] font-bold font-mono uppercase tracking-widest select-none mb-6">
+      ✦ ${classification} ✦
+    </div>
+  `;
+
+  const bottomBannerHtml = `
+    <div class="border ${bannerColorClass} px-4 py-1.5 rounded-lg text-center text-[10px] font-bold font-mono uppercase tracking-widest select-none mt-8">
+      ✦ ${classification} ✦
+    </div>
+  `;
+
   container.innerHTML = `
     <div class="flex gap-8 items-start">
       <!-- Main Content Area -->
-      <div class="flex-1 min-w-0">
+      <div class="flex-1 min-w-0 glass-panel border rounded-xl p-5 md:p-6 shadow-xl ${borderGlowClass}">
+        <!-- Breadcrumb navigation trail -->
+        ${breadcrumbsHtml}
+        
+        <!-- Top Classification Banner -->
+        ${topBannerHtml}
         <!-- Page Header telemetry -->
         <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between border-b border-slate-800 pb-6 mb-6 gap-4">
           <div>
@@ -963,9 +1763,9 @@ async function renderPageView(container: HTMLElement) {
               <span class="text-xs font-mono text-slate-500 uppercase">UPDATED: ${updatedDate}</span>
               <span class="h-3 w-px bg-slate-800"></span>
               <span class="text-xs font-mono text-teal-400 uppercase">⏱️ ${readTime} MIN READ</span>
-              ${page.tags.map(tag => `
-                <span class="text-[10px] font-mono bg-teal-950/20 text-teal-400 px-2 py-0.5 rounded border border-teal-900/30">#${escapeHtml(tag)}</span>
-              `).join('')}
+              ${integrityBadgeHtml}
+              <span class="h-3 w-px bg-slate-800"></span>
+              ${page.tags.map(tag => renderTagBadge(tag)).join('')}
             </div>
           </div>
           
@@ -987,6 +1787,9 @@ async function renderPageView(container: HTMLElement) {
                   </button>
                 </div>
                 <div class="py-1">
+                  <button id="export-single-p2p" class="w-full text-left px-4 py-2 text-xs font-mono text-slate-300 hover:bg-slate-900 hover:text-white transition">
+                    SHAREABLE P2P LINK
+                  </button>
                   <button id="export-single-print" class="w-full text-left px-4 py-2 text-xs font-mono text-slate-300 hover:bg-slate-900 hover:text-white transition">
                     PRINT / PDF
                   </button>
@@ -1012,6 +1815,7 @@ async function renderPageView(container: HTMLElement) {
         </div>
 
         <!-- Rendered Markdown Wiki Page -->
+        ${checklistProgressHtml}
         <article class="wiki-content prose prose-invert max-w-none">
           ${renderedContent}
         </article>
@@ -1043,11 +1847,18 @@ async function renderPageView(container: HTMLElement) {
             </div>
           </details>
         </div>
+        ${bottomBannerHtml}
       </div>
 
       <!-- Outline / TOC (Desktop only) -->
       ${tocHtml}
     </div>
+    <!-- Print elements for security marking -->
+    ${page.isEncrypted ? `
+      <div class="print-watermark">[CLASSIFIED - SECURE OPS]</div>
+      <div class="print-banner-top">[CLASSIFIED - SECURE OPS]</div>
+      <div class="print-banner-bottom">[CLASSIFIED - SECURE OPS]</div>
+    ` : ''}
   `;
 
   // Bind Export Dropdown Action
@@ -1203,6 +2014,90 @@ encrypted: ${!!page.isEncrypted}
     singlePrintBtn.addEventListener('click', () => {
       window.print();
     });
+
+    const singleP2pBtn = document.getElementById('export-single-p2p')!;
+    if (singleP2pBtn) {
+      singleP2pBtn.addEventListener('click', async () => {
+        let content = page.content;
+        if (page.isEncrypted && activeCryptoKey) {
+          try {
+            content = await decryptText(page.content, activeCryptoKey);
+          } catch {
+            // Fallback
+          }
+        }
+        
+        const pwd = prompt('Create a secure sharing passphrase for this peer link (min 4 characters):');
+        if (!pwd) return;
+        if (pwd.length < 4) {
+          alert('Security Requirement: Passphrase must be at least 4 characters long.');
+          return;
+        }
+        
+        try {
+          const key = await deriveKey(pwd);
+          const payloadData = {
+            title: page.title,
+            content: content,
+            tags: page.tags,
+            classification: page.classification || 'UNCLASSIFIED'
+          };
+          const encryptedStr = await encryptText(JSON.stringify(payloadData), key);
+          const base64Data = btoa(encryptedStr);
+          const shareLink = `${window.location.origin}${window.location.pathname}#/import-p2p?data=${encodeURIComponent(base64Data)}&key=${encodeURIComponent(pwd)}`;
+          
+          await navigator.clipboard.writeText(shareLink);
+          alert('✓ SECURE P2P LINK GENERATED: The encrypted link has been copied to your clipboard. Share it securely with your peer.');
+          await logSecurityEvent('P2P_LINK_EXPORT', `Generated secure share link for document: ${page.title}`);
+        } catch (err: any) {
+          alert(`Encryption error: Failed to generate sharing link - ${err.message}`);
+        }
+      });
+    }
+    
+    // Bind Reconcile Integrity Button
+    const reconcileBtn = document.getElementById('reconcile-integrity-btn');
+    if (reconcileBtn) {
+      reconcileBtn.addEventListener('click', async () => {
+        const choice = confirm(`RECONCILIATION NOTICE: Confirm restoration of document "${page.title}" to its last cryptographically verified historical revision? Unverified changes will be discarded.`);
+        if (!choice) return;
+        
+        let restored = false;
+        for (const rev of revisions) {
+          if (rev.signature) {
+            const computedSig = await computePageSignature({
+              slug: rev.slug,
+              title: rev.title,
+              content: rev.content,
+              updatedAt: rev.updatedAt,
+              tags: rev.tags || []
+            });
+            if (computedSig === rev.signature) {
+              await savePageSecure({
+                slug: rev.slug,
+                title: rev.title,
+                content: rev.content,
+                updatedAt: Date.now(),
+                tags: rev.tags || [],
+                classification: rev.classification || 'UNCLASSIFIED',
+                isSystem: page.isSystem,
+                isEncrypted: rev.isEncrypted
+              });
+              restored = true;
+              break;
+            }
+          }
+        }
+        if (restored) {
+          alert('✓ RECONCILIATION COMPLETED: The document has been restored to its last verified authentic state.');
+          await refreshPagesList();
+          await renderLayout();
+        } else {
+          alert('⚠️ RECONCILIATION FAILED: No historical revision could be cryptographically verified. Check audit logs.');
+          await logSecurityEvent('RECONCILE_FAILED', `Reconciliation failed for "${page.title}". No authentic revisions found.`);
+        }
+      });
+    }
   }
 
   // Bind Delete Page Button
@@ -1211,6 +2106,7 @@ encrypted: ${!!page.isEncrypted}
     deleteBtn.addEventListener('click', async () => {
       if (confirm(`CRITICAL SYSTEM NOTICE: Confirm total purge of intel document "${page.title}"? This action is irreversible.`)) {
         await deletePage(page.slug);
+        localStorage.setItem('secops-wiki-last-update', Date.now().toString());
         syncChannel.postMessage('refresh');
         window.location.hash = '#/page/home';
       }
@@ -1233,6 +2129,9 @@ encrypted: ${!!page.isEncrypted}
       navigator.clipboard.writeText(code).then(() => {
         button.textContent = 'COPIED';
         setTimeout(() => button.textContent = 'COPY', 2000);
+        if (document.body.classList.contains('encrypted-page-active')) {
+          scheduleClipboardWipe();
+        }
       });
     });
     wrapper.appendChild(button);
@@ -1246,19 +2145,22 @@ encrypted: ${!!page.isEncrypted}
       if (targetRev && confirm(`ROLLBACK COMMAND: Revert current page content to revision state "${targetRev.title}" saved on ${new Date(targetRev.updatedAt).toLocaleString()}?`)) {
         
         // Save current page state as a new revision before restoring!
-        const currentRef = await getPage(page.slug);
+        const currentRef = await getPageSecure(page.slug);
         if (currentRef) {
-          await saveRevision({
+          await saveRevisionSecure({
             id: `${currentRef.slug}-${Date.now()}`,
             slug: currentRef.slug,
             title: currentRef.title,
             content: currentRef.content,
-            updatedAt: Date.now()
+            updatedAt: Date.now(),
+            tags: currentRef.tags,
+            classification: currentRef.classification,
+            signature: currentRef.signature
           });
         }
         
         // Restore
-        await savePage({
+        await savePageSecure({
           slug: targetRev.slug,
           title: targetRev.title,
           content: targetRev.content,
@@ -1284,6 +2186,10 @@ encrypted: ${!!page.isEncrypted}
       await toggleMarkdownCheckbox(page.slug, idx, target.checked);
     });
   });
+
+  // Bind attachments & sandboxes
+  await resolveAttachments(container);
+  setupSandboxes(container);
 }
 
 // 2. Render Wiki Page Editor (Edit & New Page)
@@ -1291,19 +2197,26 @@ async function renderEditView(container: HTMLElement) {
   let initialTitle = '';
   let initialSlug = '';
   let initialContent = '';
-  let initialTags = '';
+  let currentTagsList: string[] = [];
   let isSystemPage = false;
 
   let isEncryptedInit = false;
+  let initialClassification = 'UNCLASSIFIED';
+  let initialExpiryValue = 0;
   if (!isNewPage) {
-    const page = await getPage(currentPageSlug);
+    const page = await getPageSecure(currentPageSlug);
     if (page) {
       initialTitle = page.title;
       initialSlug = page.slug;
       initialContent = page.content;
-      initialTags = page.tags.join(', ');
+      currentTagsList = [...page.tags];
       isSystemPage = !!page.isSystem;
       isEncryptedInit = !!page.isEncrypted;
+      initialClassification = page.classification || 'UNCLASSIFIED';
+      if (page.expiresAt && page.updatedAt) {
+        const durationMin = Math.round((page.expiresAt - page.updatedAt) / (60 * 1000));
+        initialExpiryValue = durationMin;
+      }
       
       if (page.isEncrypted) {
         if (activeCryptoKey) {
@@ -1328,7 +2241,11 @@ async function renderEditView(container: HTMLElement) {
       const draft = JSON.parse(rawDraft);
       initialTitle = draft.title || initialTitle;
       initialContent = draft.content || initialContent;
-      initialTags = draft.tags || initialTags;
+      if (Array.isArray(draft.tags)) {
+        currentTagsList = draft.tags;
+      } else if (typeof draft.tags === 'string') {
+        currentTagsList = draft.tags.split(',').map((t: string) => t.trim()).filter((t: string) => t.length > 0);
+      }
       
       draftBannerHtml = `
         <div id="draft-restore-banner" class="bg-teal-950/40 border border-teal-800 text-teal-400 p-3 rounded-lg text-xs font-mono mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
@@ -1366,11 +2283,41 @@ async function renderEditView(container: HTMLElement) {
           </div>
         </div>
 
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- Security Classification dropdown select -->
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Security Classification</label>
+            <select id="edit-classification" class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono cursor-pointer">
+              <option value="UNCLASSIFIED" ${initialClassification === 'UNCLASSIFIED' ? 'selected' : ''}>UNCLASSIFIED</option>
+              <option value="CONFIDENTIAL" ${initialClassification === 'CONFIDENTIAL' ? 'selected' : ''}>CONFIDENTIAL</option>
+              <option value="SECRET" ${initialClassification === 'SECRET' ? 'selected' : ''}>SECRET</option>
+              <option value="TOP SECRET" ${initialClassification === 'TOP SECRET' ? 'selected' : ''}>TOP SECRET</option>
+            </select>
+          </div>
+          <!-- Document Expiry Timer -->
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Intel Expiry Timer (Self-Destruct)</label>
+            <select id="edit-expiry" class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono cursor-pointer">
+              <option value="0" ${initialExpiryValue === 0 ? 'selected' : ''}>NEVER</option>
+              <option value="60" ${initialExpiryValue === 60 ? 'selected' : ''}>1 HOUR</option>
+              <option value="720" ${initialExpiryValue === 720 ? 'selected' : ''}>12 HOURS</option>
+              <option value="1440" ${initialExpiryValue === 1440 ? 'selected' : ''}>24 HOURS</option>
+              <option value="10080" ${initialExpiryValue === 10080 ? 'selected' : ''}>7 DAYS</option>
+            </select>
+          </div>
+        </div>
+
         <!-- Tags Input -->
         <div>
           <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Associated Tags</label>
-          <input type="text" id="edit-tags" value="${escapeHtml(initialTags)}" placeholder="e.g. system, security, quickstart" class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono">
-          <p class="text-[10px] text-slate-500 mt-1 font-mono">Comma-separated tags list.</p>
+          <div id="tag-pills-container" class="flex flex-wrap items-center gap-2 w-full bg-slate-950/80 border border-slate-800 focus-within:border-teal-500/50 rounded-lg p-2 min-h-[42px] transition font-mono">
+            <!-- Dynamic pills go here -->
+            <input type="text" id="tag-pill-input" placeholder="Type tag and press Enter..." class="bg-transparent border-0 text-base md:text-sm text-slate-200 focus:outline-none flex-1 min-w-[120px] p-0.5">
+          </div>
+          <div class="relative mt-1">
+            <div id="tag-pill-dropdown" class="absolute left-0 top-0 w-64 bg-slate-950 border border-slate-800 rounded-lg shadow-lg hidden font-mono text-xs max-h-40 overflow-y-auto z-20"></div>
+          </div>
+          <p class="text-[10px] text-slate-500 mt-1 font-mono">Type and press Enter, comma, or select from dropdown list.</p>
         </div>
 
         <!-- Mobile Tab Selector -->
@@ -1386,16 +2333,20 @@ async function renderEditView(container: HTMLElement) {
             <span class="hidden md:inline text-[10px] text-slate-500 font-mono">Live editor preview enabled (Type [[ for page links)</span>
           </div>
           <!-- Formatting Toolbar -->
-          <div class="flex flex-wrap gap-1 p-2 bg-slate-950/80 border border-slate-800 border-b-0 rounded-t-lg select-none">
-            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="bold">B</button>
-            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="italic">I</button>
-            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="header">H3</button>
-            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="code">Code</button>
-            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="link">Link</button>
-            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="table">Table</button>
-            <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="checklist">Todo</button>
+          <div class="flex flex-wrap gap-1 p-2 bg-slate-950/80 border border-slate-800 border-b-0 rounded-t-lg select-none items-center justify-between">
+            <div class="flex flex-wrap gap-1">
+              <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="bold">B</button>
+              <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="italic">I</button>
+              <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="header">H3</button>
+              <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="code">Code</button>
+              <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="link">Link</button>
+              <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="table">Table</button>
+              <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="checklist">Todo</button>
+              <button type="button" id="toolbar-sketch-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-450 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold">Sketch</button>
+            </div>
+            <button type="button" id="toggle-split-btn" class="hidden md:inline-block px-2.5 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-teal-400 hover:text-teal-300 font-mono text-[10px] rounded transition uppercase font-bold">Toggle Split</button>
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div id="editor-layout-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div id="edit-content-container" class="block relative">
               <textarea id="edit-content" rows="16" required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-b-lg p-4 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono border-t-0" placeholder="Enter markdown payload here...">${escapeHtml(initialContent)}</textarea>
               <!-- Auto-complete popup -->
@@ -1467,6 +2418,65 @@ async function renderEditView(container: HTMLElement) {
     previewBox.innerHTML = renderMarkdownSecure(markdown);
   };
 
+  function formatMarkdownTable(tableText: string): string {
+    const lines = tableText.trim().split('\n');
+    if (lines.length < 2) return tableText;
+    
+    const tableData = lines.map(line => {
+      let content = line.trim();
+      if (content.startsWith('|')) content = content.slice(1);
+      if (content.endsWith('|')) content = content.slice(0, -1);
+      return content.split('|').map(cell => cell.trim());
+    });
+    
+    const colCount = Math.max(...tableData.map(row => row.length));
+    if (colCount === 0) return tableText;
+    
+    const colWidths = Array(colCount).fill(0);
+    for (let r = 0; r < tableData.length; r++) {
+      const isSeparator = r === 1 && tableData[r].every(cell => /^:-*-*:?$/.test(cell) || /^-+$/.test(cell));
+      for (let c = 0; c < colCount; c++) {
+        const val = tableData[r][c] || '';
+        if (!isSeparator && val.length > colWidths[c]) {
+          colWidths[c] = val.length;
+        }
+      }
+    }
+    
+    for (let c = 0; c < colCount; c++) {
+      colWidths[c] = Math.max(colWidths[c], 3);
+    }
+    
+    const formattedLines = tableData.map((row, r) => {
+      const isSeparator = r === 1 && row.every(cell => /^:-*-*:?$/.test(cell) || /^-+$/.test(cell));
+      
+      const cells = Array(colCount).fill('').map((_, c) => {
+        const val = row[c] || '';
+        if (isSeparator) {
+          const hasLeftColon = val.startsWith(':');
+          const hasRightColon = val.endsWith(':');
+          const dashesCount = colWidths[c] - (hasLeftColon ? 1 : 0) - (hasRightColon ? 1 : 0);
+          return (hasLeftColon ? ':' : '') + '-'.repeat(Math.max(1, dashesCount)) + (hasRightColon ? ':' : '');
+        } else {
+          return val.padEnd(colWidths[c], ' ');
+        }
+      });
+      
+      return `| ${cells.join(' | ')} |`;
+    });
+    
+    return formattedLines.join('\n');
+  }
+
+  // Bind sketch and attachment handlers
+  const sketchBtn = document.getElementById('toolbar-sketch-btn');
+  if (sketchBtn) {
+    sketchBtn.addEventListener('click', () => {
+      openDrawingCanvas(textarea);
+    });
+  }
+  setupAttachmentHandlers(textarea);
+
   // Bind Formatting Toolbar inserts
   const insertFormatting = (format: string) => {
     const start = textarea.selectionStart;
@@ -1492,7 +2502,15 @@ async function renderEditView(container: HTMLElement) {
         replacement = `[${selectedText || 'Link text'}](url)`;
         break;
       case 'table':
-        replacement = `\n| Header 1 | Header 2 |\n| -------- | -------- |\n| Cell 1   | Cell 2   |\n`;
+        if (selectedText && selectedText.includes('|') && selectedText.includes('\n')) {
+          try {
+            replacement = '\n' + formatMarkdownTable(selectedText) + '\n';
+          } catch {
+            replacement = `\n| Header 1 | Header 2 |\n| -------- | -------- |\n| Cell 1   | Cell 2   |\n`;
+          }
+        } else {
+          replacement = `\n| Header 1 | Header 2 |\n| -------- | -------- |\n| Cell 1   | Cell 2   |\n`;
+        }
         break;
       case 'checklist':
         replacement = `\n- [ ] ${selectedText || 'Task description'}\n`;
@@ -1575,24 +2593,161 @@ async function renderEditView(container: HTMLElement) {
     }
   });
   
-  textarea.addEventListener('input', updatePreview);
+  textarea.addEventListener('input', () => {
+    updatePreview();
+    saveAutosaveDraft();
+  });
   updatePreview(); // Initial render
 
-  // Autosave Draft interval (runs every 5 seconds)
-  const autoSaveInterval = setInterval(() => {
+  // Tag pill manager logic
+  const pillsContainer = document.getElementById('tag-pills-container') as HTMLDivElement;
+  const pillInput = document.getElementById('tag-pill-input') as HTMLInputElement;
+  const tagDropdown = document.getElementById('tag-pill-dropdown') as HTMLDivElement;
+  const allExistingTags = Array.from(new Set(wikiPagesList.flatMap(p => p.tags)));
+
+  function renderTagPills() {
+    if (!pillsContainer || !pillInput) return;
+    
+    const badges = pillsContainer.querySelectorAll('.tag-badge-pill');
+    badges.forEach(b => b.remove());
+    
+    currentTagsList.forEach(tag => {
+      const badge = document.createElement('span');
+      badge.className = 'tag-badge-pill flex items-center gap-1 text-[10px] font-mono bg-teal-950/40 text-teal-400 px-2 py-1 rounded border border-teal-900/30 select-none';
+      badge.innerHTML = `
+        #${escapeHtml(tag)}
+        <button type="button" class="tag-remove-btn hover:text-red-400 font-bold transition focus:outline-none" data-tag="${escapeHtml(tag)}">×</button>
+      `;
+      pillsContainer.insertBefore(badge, pillInput);
+    });
+    
+    const removeBtns = pillsContainer.querySelectorAll('.tag-remove-btn');
+    removeBtns.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const tagToRemove = (e.currentTarget as HTMLButtonElement).getAttribute('data-tag');
+        if (tagToRemove) {
+          currentTagsList = currentTagsList.filter(t => t !== tagToRemove);
+          renderTagPills();
+          saveAutosaveDraft();
+        }
+      });
+    });
+  }
+
+  function showDropdownSuggestions() {
+    if (!tagDropdown || !pillInput) return;
+    const query = pillInput.value.trim().toLowerCase();
+    const suggestions = allExistingTags.filter(tag => 
+      tag.includes(query) && !currentTagsList.includes(tag)
+    );
+    
+    if (suggestions.length === 0) {
+      tagDropdown.classList.add('hidden');
+      return;
+    }
+    
+    tagDropdown.innerHTML = suggestions.map(tag => `
+      <div class="tag-dropdown-item px-3 py-2 cursor-pointer hover:bg-slate-900 hover:text-white text-slate-350 transition" data-tag="${escapeHtml(tag)}">
+        #${escapeHtml(tag)}
+      </div>
+    `).join('');
+    
+    tagDropdown.classList.remove('hidden');
+    
+    const items = tagDropdown.querySelectorAll('.tag-dropdown-item');
+    items.forEach(item => {
+      item.addEventListener('click', (e) => {
+        const tag = (e.currentTarget as HTMLDivElement).getAttribute('data-tag');
+        if (tag && !currentTagsList.includes(tag)) {
+          currentTagsList.push(tag);
+          renderTagPills();
+          saveAutosaveDraft();
+        }
+        pillInput.value = '';
+        tagDropdown.classList.add('hidden');
+        pillInput.focus();
+      });
+    });
+  }
+
+  if (pillInput) {
+    pillInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        const value = pillInput.value.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
+        if (value && !currentTagsList.includes(value)) {
+          currentTagsList.push(value);
+          renderTagPills();
+          saveAutosaveDraft();
+        }
+        pillInput.value = '';
+        if (tagDropdown) tagDropdown.classList.add('hidden');
+      } else if (e.key === 'Backspace' && pillInput.value === '') {
+        currentTagsList.pop();
+        renderTagPills();
+        saveAutosaveDraft();
+      }
+    });
+
+    pillInput.addEventListener('input', showDropdownSuggestions);
+    pillInput.addEventListener('focus', showDropdownSuggestions);
+  }
+
+  // Render initial pills
+  renderTagPills();
+
+  // Split-screen editor layout toggle
+  const gridEl = document.getElementById('editor-layout-grid');
+  const previewCont = document.getElementById('live-preview-container');
+  const toggleSplitBtn = document.getElementById('toggle-split-btn');
+
+  function applySplitScreen() {
+    if (!gridEl || !previewCont || !toggleSplitBtn) return;
+    if (isSplitScreen) {
+      gridEl.classList.remove('md:grid-cols-1');
+      gridEl.classList.add('md:grid-cols-2');
+      previewCont.classList.remove('md:hidden');
+      previewCont.classList.add('md:block');
+      toggleSplitBtn.textContent = 'Full Width';
+      toggleSplitBtn.classList.remove('text-slate-450');
+      toggleSplitBtn.classList.add('text-teal-400');
+    } else {
+      gridEl.classList.remove('md:grid-cols-2');
+      gridEl.classList.add('md:grid-cols-1');
+      previewCont.classList.remove('md:block');
+      previewCont.classList.add('md:hidden');
+      toggleSplitBtn.textContent = 'Split Screen';
+      toggleSplitBtn.classList.remove('text-teal-400');
+      toggleSplitBtn.classList.add('text-slate-450');
+    }
+  }
+
+  if (toggleSplitBtn) {
+    toggleSplitBtn.addEventListener('click', () => {
+      isSplitScreen = !isSplitScreen;
+      localStorage.setItem('secops-wiki-split-screen', isSplitScreen.toString());
+      applySplitScreen();
+    });
+  }
+
+  // Apply default split-screen layout state
+  applySplitScreen();
+
+  const saveAutosaveDraft = () => {
     const titleVal = (document.getElementById('edit-title') as HTMLInputElement)?.value;
     const contentVal = textarea.value;
-    const tagsVal = (document.getElementById('edit-tags') as HTMLInputElement)?.value;
-    
-    if (titleVal || contentVal) {
+    if (titleVal || contentVal || currentTagsList.length > 0) {
       localStorage.setItem(draftKey, JSON.stringify({
         title: titleVal,
         content: contentVal,
-        tags: tagsVal,
+        tags: currentTagsList,
         updatedAt: Date.now()
       }));
     }
-  }, 5000);
+  };
+
+  // Autosave Draft interval (runs every 5 seconds)
+  const autoSaveInterval = setInterval(saveAutosaveDraft, 5000);
 
   const cleanUpOnHashChange = () => {
     clearInterval(autoSaveInterval);
@@ -1617,6 +2772,21 @@ async function renderEditView(container: HTMLElement) {
     });
   }
 
+  // Close dropdown on click outside
+  const closeDropdownHandler = (e: MouseEvent) => {
+    if (tagDropdown && !tagDropdown.contains(e.target as Node) && e.target !== pillInput) {
+      tagDropdown.classList.add('hidden');
+    }
+  };
+  document.addEventListener('click', closeDropdownHandler);
+
+  // Ensure clean up of document listeners
+  const cleanUpDocListeners = () => {
+    document.removeEventListener('click', closeDropdownHandler);
+    window.removeEventListener('hashchange', cleanUpDocListeners);
+  };
+  window.addEventListener('hashchange', cleanUpDocListeners);
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -1624,9 +2794,11 @@ async function renderEditView(container: HTMLElement) {
     const slug = isNewPage 
       ? (document.getElementById('edit-slug') as HTMLInputElement).value.trim().toLowerCase()
       : initialSlug;
-    const rawTags = (document.getElementById('edit-tags') as HTMLInputElement).value;
     const content = textarea.value;
     const encryptChecked = (document.getElementById('edit-encrypt') as HTMLInputElement).checked;
+    const classification = (document.getElementById('edit-classification') as HTMLSelectElement).value;
+    const expirySelect = document.getElementById('edit-expiry') as HTMLSelectElement;
+    const expiryMin = expirySelect ? parseInt(expirySelect.value, 10) : 0;
 
     // Validate input slug
     if (isNewPage && !/^[a-z0-9-_]+$/.test(slug)) {
@@ -1634,21 +2806,21 @@ async function renderEditView(container: HTMLElement) {
       return;
     }
 
-    const tags = rawTags
-      .split(',')
-      .map(tag => sanitizeUnicode(tag.trim()).toLowerCase())
-      .filter(tag => tag.length > 0);
+    const tags = currentTagsList.map(tag => sanitizeUnicode(tag.trim()).toLowerCase()).filter(tag => tag.length > 0);
 
     // Save previous state as revision history before saving new page (if page already exists)
-    const prevPage = await getPage(slug);
+    const prevPage = await getPageSecure(slug);
     if (prevPage) {
-      await saveRevision({
+      await saveRevisionSecure({
         id: `${prevPage.slug}-${Date.now()}`,
         slug: prevPage.slug,
         title: prevPage.title,
         content: prevPage.content,
         updatedAt: prevPage.updatedAt,
-        isEncrypted: prevPage.isEncrypted
+        isEncrypted: prevPage.isEncrypted,
+        tags: prevPage.tags,
+        classification: prevPage.classification,
+        signature: prevPage.signature
       });
     }
 
@@ -1656,9 +2828,14 @@ async function renderEditView(container: HTMLElement) {
     let finalContent = content;
     if (encryptChecked) {
       if (!activeCryptoKey) {
-        const pwd = prompt('Enter a security passphrase to encrypt this document:');
+        const pwd = prompt('Enter a security passphrase to encrypt this document (min 8 chars, mixed case, numbers, symbols):');
         if (!pwd) {
           alert('Encryption Aborted: A security passphrase is required to save an encrypted document.');
+          return;
+        }
+        const strength = validatePasswordStrength(pwd);
+        if (!strength.valid) {
+          alert(`SECURITY ERROR: Passphrase too weak.\n\n${strength.message}`);
           return;
         }
         activeCryptoKey = await deriveKey(pwd);
@@ -1678,11 +2855,18 @@ async function renderEditView(container: HTMLElement) {
       updatedAt: Date.now(),
       tags,
       isSystem: isSystemPage,
-      isEncrypted: encryptChecked
+      isEncrypted: encryptChecked,
+      classification: classification as any
     };
 
+    if (expiryMin > 0) {
+      updatedPage.expiresAt = updatedPage.updatedAt + (expiryMin * 60 * 1000);
+    }
+
+    updatedPage.signature = await computePageSignature(updatedPage);
+
     try {
-      await savePage(updatedPage);
+      await savePageSecure(updatedPage);
       cleanUpDraft();
       syncChannel.postMessage('refresh');
       window.location.hash = `#/page/${slug}`;
@@ -2111,43 +3295,364 @@ function csvRowToWikiPage(row: Record<string, string>): WikiPage {
   };
 }
 
+interface DiffLine {
+  type: 'added' | 'removed' | 'unchanged';
+  text: string;
+}
+function computeDiffLines(str1: string, str2: string): DiffLine[] {
+  const lines1 = str1.split('\n');
+  const lines2 = str2.split('\n');
+  const dp: number[][] = Array(lines1.length + 1).fill(0).map(() => Array(lines2.length + 1).fill(0));
+  for (let i = 1; i <= lines1.length; i++) {
+    for (let j = 1; j <= lines2.length; j++) {
+      if (lines1[i-1] === lines2[j-1]) {
+        dp[i][j] = dp[i-1][j-1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i-1][j], dp[i][j-1]);
+      }
+    }
+  }
+  
+  const diff: DiffLine[] = [];
+  let i = lines1.length, j = lines2.length;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && lines1[i-1] === lines2[j-1]) {
+      diff.unshift({ type: 'unchanged', text: lines1[i-1] });
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+      diff.unshift({ type: 'added', text: lines2[j-1] });
+      j--;
+    } else {
+      diff.unshift({ type: 'removed', text: lines1[i-1] });
+      i--;
+    }
+  }
+  return diff;
+}
+
+function showConflictDiffModal(existing: WikiPage, imported: WikiPage): Promise<'OVERWRITE' | 'REVISION' | 'MERGE_RENAME' | 'SKIP'> {
+  return new Promise((resolve) => {
+    let modal = document.getElementById('conflict-diff-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'conflict-diff-modal';
+      modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-[100] flex items-center justify-center p-4';
+      document.body.appendChild(modal);
+    }
+    modal.classList.remove('hidden');
+    
+    const diffLines = computeDiffLines(existing.content, imported.content);
+    const diffHtml = diffLines.map(line => {
+      let cls = 'diff-line-unchanged';
+      let prefix = ' ';
+      if (line.type === 'added') {
+        cls = 'diff-line-added px-1 rounded';
+        prefix = '+';
+      } else if (line.type === 'removed') {
+        cls = 'diff-line-removed px-1 rounded';
+        prefix = '-';
+      }
+      return `<div class="font-mono text-xs whitespace-pre-wrap ${cls}">${prefix} ${escapeHtml(line.text)}</div>`;
+    }).join('\n');
+    
+    modal.innerHTML = `
+      <div class="glass-panel border border-teal-900/30 rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col glow-border shadow-2xl">
+        <div class="p-4 border-b border-slate-800 flex items-center justify-between shrink-0">
+          <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider">Conflict Detected: ${escapeHtml(existing.slug)}</h3>
+          <span class="text-[10px] font-mono bg-red-950/40 text-red-400 border border-red-900/30 px-2 py-0.5 rounded">SLUG DUP_WARN</span>
+        </div>
+        
+        <div class="p-4 overflow-y-auto space-y-4 flex-1">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="bg-slate-950/50 border border-slate-850 p-3 rounded-lg space-y-2">
+              <h4 class="text-xs font-bold font-mono text-teal-400 uppercase">Existing Document</h4>
+              <p class="text-xs font-mono text-white"><span class="text-slate-500">TITLE:</span> ${escapeHtml(existing.title)}</p>
+              <p class="text-xs font-mono text-white"><span class="text-slate-500">TAGS:</span> ${existing.tags.map(t => `#${t}`).join(', ')}</p>
+              <p class="text-[10px] font-mono text-slate-500"><span class="text-slate-500">MODIFIED:</span> ${new Date(existing.updatedAt).toLocaleString()}</p>
+            </div>
+            
+            <div class="bg-slate-950/50 border border-slate-850 p-3 rounded-lg space-y-2">
+              <h4 class="text-xs font-bold font-mono text-teal-450 uppercase">Imported Document</h4>
+              <p class="text-xs font-mono text-white"><span class="text-slate-500">TITLE:</span> ${escapeHtml(imported.title)}</p>
+              <p class="text-xs font-mono text-white"><span class="text-slate-500">TAGS:</span> ${imported.tags.map(t => `#${t}`).join(', ')}</p>
+              <p class="text-[10px] font-mono text-slate-500"><span class="text-slate-500">MODIFIED:</span> ${new Date(imported.updatedAt).toLocaleString()}</p>
+            </div>
+          </div>
+          
+          <div class="space-y-1">
+            <h4 class="text-[10px] font-bold font-mono text-slate-400 uppercase tracking-wider">Line-by-line Content Diff (- Existing, + Imported)</h4>
+            <div class="bg-slate-950 border border-slate-850 p-3 rounded-lg max-h-60 overflow-y-auto space-y-0.5">
+              ${diffHtml}
+            </div>
+          </div>
+        </div>
+        
+        <div class="p-4 border-t border-slate-800 bg-slate-950/50 flex flex-wrap gap-2 justify-end shrink-0">
+          <button id="diff-opt-skip" class="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 hover:text-white font-mono text-xs uppercase rounded transition">
+            Skip File
+          </button>
+          <button id="diff-opt-rename" class="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 hover:text-white font-mono text-xs uppercase rounded transition">
+            Keep Both (Rename)
+          </button>
+          <button id="diff-opt-overwrite" class="px-3 py-1.5 bg-red-950/20 border border-red-900/30 hover:bg-red-900/30 text-red-400 hover:text-red-300 font-mono text-xs uppercase rounded transition">
+            Overwrite
+          </button>
+          <button id="diff-opt-archive" class="px-3 py-1.5 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.15)]">
+            Archive & Replace
+          </button>
+        </div>
+      </div>
+    `;
+    
+    document.getElementById('diff-opt-skip')!.addEventListener('click', () => {
+      modal!.classList.add('hidden');
+      resolve('SKIP');
+    });
+    document.getElementById('diff-opt-rename')!.addEventListener('click', () => {
+      modal!.classList.add('hidden');
+      resolve('MERGE_RENAME');
+    });
+    document.getElementById('diff-opt-overwrite')!.addEventListener('click', () => {
+      modal!.classList.add('hidden');
+      resolve('OVERWRITE');
+    });
+    document.getElementById('diff-opt-archive')!.addEventListener('click', () => {
+      modal!.classList.add('hidden');
+      resolve('REVISION');
+    });
+  });
+}
+
 async function importWikiPage(page: WikiPage, mode: string): Promise<boolean> {
   const validated = validateImportedPage(page);
-  const existing = await getPage(validated.slug);
+  const existing = await getPageSecure(validated.slug);
   
   if (existing) {
-    if (mode === 'SKIP') {
+    let activeMode = mode;
+    if (mode === 'ASK') {
+      activeMode = await showConflictDiffModal(existing, validated);
+    }
+    
+    if (activeMode === 'SKIP') {
       return false;
     }
-    if (mode === 'REVISION') {
-      await saveRevision({
+    if (activeMode === 'REVISION') {
+      await saveRevisionSecure({
         id: `${existing.slug}-${Date.now()}`,
         slug: existing.slug,
         title: existing.title,
         content: existing.content,
         updatedAt: existing.updatedAt,
-        isEncrypted: existing.isEncrypted
+        isEncrypted: existing.isEncrypted,
+        tags: existing.tags,
+        classification: existing.classification,
+        signature: existing.signature
       });
-      await savePage(validated);
-    } else if (mode === 'OVERWRITE') {
-      await savePage(validated);
-    } else if (mode === 'MERGE_RENAME') {
+      validated.signature = await computePageSignature(validated);
+      await savePageSecure(validated);
+    } else if (activeMode === 'OVERWRITE') {
+      validated.signature = await computePageSignature(validated);
+      await savePageSecure(validated);
+    } else if (activeMode === 'MERGE_RENAME') {
       let newSlug = `${validated.slug}-imported`;
-      let check = await getPage(newSlug);
+      let check = await getPageSecure(newSlug);
       let counter = 1;
       while (check) {
         newSlug = `${validated.slug}-imported-${counter}`;
-        check = await getPage(newSlug);
+        check = await getPageSecure(newSlug);
         counter++;
       }
       validated.slug = newSlug;
       validated.title = `${validated.title} (Imported)`;
-      await savePage(validated);
+      validated.signature = await computePageSignature(validated);
+      await savePageSecure(validated);
     }
   } else {
-    await savePage(validated);
+    validated.signature = await computePageSignature(validated);
+    await savePageSecure(validated);
   }
   return true;
+}
+
+async function handleFilesImport(files: FileList) {
+  if (!files || files.length === 0) return;
+  const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
+  let mdSuccess = 0, csvSuccess = 0, jsonSuccess = 0;
+  let mdSkip = 0, csvSkip = 0, jsonSkip = 0;
+  let mdFail = 0, csvFail = 0, jsonFail = 0;
+  
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    
+    if (ext === 'md') {
+      await new Promise<void>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          try {
+            const rawText = event.target?.result as string;
+            const wikiPage = parseMarkdownImport(file.name, rawText);
+            const success = await importWikiPage(wikiPage, resolutionMode);
+            if (success) mdSuccess++;
+            else mdSkip++;
+          } catch {
+            mdFail++;
+          }
+          resolve();
+        };
+        reader.readAsText(file);
+      });
+    } else if (ext === 'csv') {
+      await new Promise<void>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          try {
+            const text = event.target?.result as string;
+            const rows = parseCSV(text);
+            for (const row of rows) {
+              try {
+                const pageData = csvRowToWikiPage(row);
+                const success = await importWikiPage(pageData, resolutionMode);
+                if (success) csvSuccess++;
+                else csvSkip++;
+              } catch {
+                csvFail++;
+              }
+            }
+          } catch {
+            csvFail++;
+          }
+          resolve();
+        };
+        reader.readAsText(file);
+      });
+    } else if (ext === 'json') {
+      await new Promise<void>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          try {
+            const json = JSON.parse(event.target?.result as string);
+            let importData = json;
+            
+            if (json && json.encrypted === true && json.payload) {
+              const password = prompt('Secure Backup: Enter password to decrypt database backup file:');
+              if (password === null) {
+                jsonFail++;
+                resolve();
+                return;
+              }
+              try {
+                const key = await deriveKey(password);
+                const decryptedStr = await decryptText(json.payload, key);
+                importData = JSON.parse(decryptedStr);
+              } catch (err) {
+                alert('Backup Decryption Alert: Authentication failed. Invalid backup passphrase.');
+                jsonFail++;
+                resolve();
+                return;
+              }
+            } else if (json && json.encrypted === false && json.payload) {
+              importData = json.payload;
+            }
+            
+            // Standardize items to an array of objects
+            const items = Array.isArray(importData) ? importData : [importData];
+            for (const item of items) {
+              try {
+                // Legacy schema version migration and normalization safeguards
+                if (!item.slug && item.title) {
+                  item.slug = item.title.toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
+                }
+                if (!item.slug) {
+                  item.slug = `imported-item-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                }
+                if (!item.title) {
+                  item.title = item.slug.replace(/[-_]+/g, ' ');
+                }
+                if (typeof item.tags === 'string') {
+                  item.tags = (item.tags as string).split(',').map((t: string) => t.trim()).filter((t: string) => t.length > 0);
+                }
+                if (!Array.isArray(item.tags)) {
+                  item.tags = [];
+                }
+                if (!item.classification) {
+                  item.classification = 'UNCLASSIFIED';
+                }
+                if (typeof item.updatedAt !== 'number') {
+                  item.updatedAt = Date.now();
+                }
+                
+                const success = await importWikiPage(item, resolutionMode);
+                if (success) jsonSuccess++;
+                else jsonSkip++;
+              } catch {
+                jsonFail++;
+              }
+            }
+          } catch {
+            jsonFail++;
+          }
+          resolve();
+        };
+        reader.readAsText(file);
+      });
+    }
+  }
+  
+  alert(`INGESTION COMPLETED (Conflict resolution: ${resolutionMode.toUpperCase()}):\n\n` +
+        `Markdown (.md) files:\n- Ingested: ${mdSuccess}\n- Skipped: ${mdSkip}\n- Failed: ${mdFail}\n\n` +
+        `CSV files (rows):\n- Ingested: ${csvSuccess}\n- Skipped: ${csvSkip}\n- Failed: ${csvFail}\n\n` +
+        `JSON files (records):\n- Ingested: ${jsonSuccess}\n- Skipped: ${jsonSkip}\n- Failed: ${jsonFail}`);
+        
+  syncChannel.postMessage('refresh');
+  await refreshPagesList();
+  await renderLayout();
+}
+
+async function renderTagColorManager() {
+  const managerDiv = document.getElementById('tag-color-palette-manager');
+  if (!managerDiv) return;
+  
+  const allTags = Array.from(new Set(wikiPagesList.flatMap(p => p.tags)));
+  const colorsConfig = await getTagColors();
+  
+  if (allTags.length === 0) {
+    managerDiv.innerHTML = `<p class="text-xs font-mono text-slate-500">No active document tags registered.</p>`;
+    return;
+  }
+  
+  let html = `<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">`;
+  for (const tag of allTags) {
+    const config = colorsConfig.find(c => c.tag === tag);
+    const activeColor = config ? config.color : 'slate';
+    
+    html += `
+      <div class="flex items-center justify-between p-2 bg-slate-950/40 border border-slate-800 rounded">
+        <span class="text-xs font-mono text-slate-400">#${escapeHtml(tag)}</span>
+        <select class="tag-color-select bg-slate-900 border border-slate-850 text-xs font-mono text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-teal-500 cursor-pointer" data-tag="${escapeHtml(tag)}">
+          <option value="slate" ${activeColor === 'slate' ? 'selected' : ''}>SLATE GREY</option>
+          <option value="emerald" ${activeColor === 'emerald' ? 'selected' : ''}>EMERALD GREEN</option>
+          <option value="blue" ${activeColor === 'blue' ? 'selected' : ''}>BLUE TEAM</option>
+          <option value="red" ${activeColor === 'red' ? 'selected' : ''}>RED TEAM</option>
+          <option value="amber" ${activeColor === 'amber' ? 'selected' : ''}>AMBER CAUTION</option>
+        </select>
+      </div>
+    `;
+  }
+  html += `</div>`;
+  managerDiv.innerHTML = html;
+  
+  const selects = managerDiv.querySelectorAll('.tag-color-select');
+  selects.forEach(select => {
+    select.addEventListener('change', async (e) => {
+      const tag = (e.currentTarget as HTMLSelectElement).getAttribute('data-tag')!;
+      const color = (e.currentTarget as HTMLSelectElement).value;
+      await saveTagColor({ tag, color });
+      await cacheTagColors();
+      await renderLayout();
+    });
+  });
 }
 
 // 3. Render System Administration View
@@ -2195,6 +3700,36 @@ function renderSystemView(container: HTMLElement) {
             <li class="flex justify-between">
               <span class="text-slate-500">ACTIVE VISUAL THEME:</span>
               <span class="text-emerald-400 font-bold">${currentTheme.toUpperCase()}</span>
+            </li>
+            <li class="flex justify-between items-center py-0.5">
+              <span class="text-slate-500">MASK ENCRYPTED CORES:</span>
+              <label class="relative inline-flex items-center cursor-pointer select-none">
+                <input type="checkbox" id="system-mask-encrypted-checkbox" class="sr-only peer" ${maskEncryptedTitles ? 'checked' : ''}>
+                <div class="w-7 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-450 after:border-slate-350 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-teal-600 peer-checked:after:bg-white"></div>
+              </label>
+            </li>
+            <li class="flex justify-between items-center py-0.5">
+              <span class="text-slate-500">DATABASE ENCRYPTION:</span>
+              <label class="relative inline-flex items-center cursor-pointer select-none">
+                <input type="checkbox" id="system-db-encrypted-checkbox" class="sr-only peer" ${localStorage.getItem('secops-wiki-db-encrypted') === 'true' ? 'checked' : ''}>
+                <div class="w-7 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-450 after:border-slate-350 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-teal-600 peer-checked:after:bg-white"></div>
+              </label>
+            </li>
+            <li class="flex justify-between items-center py-0.5">
+              <span class="text-slate-500">BIOMETRIC UNLOCK:</span>
+              <button id="system-webauthn-register-btn" class="px-2 py-0.5 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 font-mono text-[9px] uppercase rounded transition">
+                ${localStorage.getItem('secops-wiki-webauthn-gate') === 'true' ? 'DEREGISTER' : 'REGISTER'}
+              </button>
+            </li>
+            <li class="flex justify-between items-center py-0.5">
+              <span class="text-slate-500">INACTIVITY TIMEOUT:</span>
+              <select id="system-session-timeout-select" class="bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] font-mono text-slate-300 focus:outline-none focus:border-teal-500 cursor-pointer">
+                <option value="5" ${parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10) === 5 ? 'selected' : ''}>5 MIN</option>
+                <option value="15" ${parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10) === 15 ? 'selected' : ''}>15 MIN</option>
+                <option value="30" ${parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10) === 30 ? 'selected' : ''}>30 MIN</option>
+                <option value="60" ${parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10) === 60 ? 'selected' : ''}>1 HOUR</option>
+                <option value="0" ${parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10) === 0 ? 'selected' : ''}>NEVER</option>
+              </select>
             </li>
           </ul>
         </div>
@@ -2304,49 +3839,43 @@ function renderSystemView(container: HTMLElement) {
             </select>
           </div>
 
-          <!-- Import JSON Payload -->
-          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+          <!-- Unified Ingestion Loader -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between sm:col-span-2 lg:col-span-3">
             <div>
-              <h4 class="text-xs font-bold font-mono text-white uppercase">Import JSON Payload</h4>
-              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Ingest a JSON backup payload into the database (up to 100MB).</p>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Unified Ingestion Loader</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Ingest JSON backup, CSV spreadsheet, or Markdown files (.md). Extension auto-detection will route and parse automatically.</p>
             </div>
-            <label class="w-full text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block select-none">
-              Load JSON
-              <input type="file" id="system-import-file" accept=".json" class="hidden">
-            </label>
+            <div class="flex flex-col sm:flex-row gap-3">
+              <label class="flex-1 text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block select-none">
+                Select File(s)
+                <input type="file" id="system-unified-import-file" accept=".json,.md,.csv" multiple class="hidden">
+              </label>
+              <div id="system-drop-zone" class="flex-[2] border-2 border-dashed border-slate-800 hover:border-teal-500/60 p-2 rounded flex items-center justify-center text-center transition-all cursor-pointer bg-slate-950/20 min-h-[38px]">
+                <span class="text-[9px] font-mono text-slate-400 uppercase">Or Drag & Drop files here</span>
+              </div>
+            </div>
           </div>
 
-          <!-- Import Markdown Files -->
-          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+          <!-- Tag Color Customization Palette -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between sm:col-span-2 lg:col-span-3">
             <div>
-              <h4 class="text-xs font-bold font-mono text-white uppercase">Import Markdown Files</h4>
-              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Load one or more raw markdown (.md) documents. Frontmatter supported.</p>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Tag Theme Palette Manager</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Assign individual visual themes to active document tags.</p>
             </div>
-            <label class="w-full text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block select-none">
-              Load .MD Files
-              <input type="file" id="system-import-md-files" accept=".md" multiple class="hidden">
-            </label>
+            <div id="tag-color-palette-manager" class="mt-2 space-y-2">
+              <!-- Tag manager dynamic elements will render here -->
+            </div>
           </div>
 
-          <!-- Import CSV Registry -->
-          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+          <!-- PWA Offline Cache Buster -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between sm:col-span-2 lg:col-span-3">
             <div>
-              <h4 class="text-xs font-bold font-mono text-white uppercase">Import CSV Registry</h4>
-              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Load page logs from CSV spreadsheet format. Column headers required.</p>
+              <h4 class="text-xs font-bold font-mono text-amber-400 uppercase">PWA Offline Cache Buster</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Purge cached service worker registrations and static asset cache buckets.</p>
             </div>
-            <label class="w-full text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block select-none">
-              Load CSV
-              <input type="file" id="system-import-csv-file" accept=".csv" class="hidden">
-            </label>
-          </div>
-
-          <!-- Drag & Drop Zone -->
-          <div id="system-drop-zone" class="glass-panel border-2 border-dashed border-slate-800 hover:border-teal-500/60 p-5 rounded-lg flex flex-col items-center justify-center text-center transition-all cursor-pointer sm:col-span-2 lg:col-span-3 min-h-[100px] bg-slate-950/20">
-            <svg class="w-8 h-8 text-slate-500 mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/>
-            </svg>
-            <span class="text-[10px] font-mono text-slate-300 uppercase font-semibold">Bulk Drag & Drop Terminal</span>
-            <span class="text-[9px] font-mono text-slate-500 mt-0.5">Drop JSON, Markdown (.md), or CSV files here to ingest automatically.</span>
+            <button id="system-cache-bust-btn" class="w-full py-2 bg-amber-950/20 border border-amber-900/30 hover:bg-amber-900/30 text-amber-400 hover:text-amber-300 font-mono text-xs uppercase rounded transition">
+              Bust Cache
+            </button>
           </div>
 
           <!-- Reset Default Database -->
@@ -2364,6 +3893,37 @@ function renderSystemView(container: HTMLElement) {
 
       <!-- Database Diagnostics Report Container -->
       <div id="db-health-diagnostics" class="mt-6"></div>
+
+      <!-- Autosave Draft Recovery Console -->
+      <div class="glass-panel border border-slate-800 rounded-xl p-5 mt-6 space-y-4">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+          <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider">Autosave Draft Recovery Console</h3>
+          <button id="system-wipe-all-drafts-btn" class="px-2.5 py-1 bg-red-950/20 border border-red-900/30 hover:bg-red-900/30 text-red-400 hover:text-red-300 font-mono text-[10px] rounded transition uppercase">
+            Wipe All Drafts
+          </button>
+        </div>
+        <div id="system-drafts-recovery-list" class="space-y-3 max-h-60 overflow-y-auto divide-y divide-slate-850/40 pr-1">
+          <!-- Unsaved draft fragments will render dynamically -->
+        </div>
+      </div>
+
+      <!-- Security Audit Log Console -->
+      <div class="glass-panel border border-slate-800 rounded-xl p-5 mt-6 space-y-4">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+          <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider">Security Event & Audit Log Console</h3>
+          <div class="flex gap-2">
+            <button id="system-prune-audit-btn" class="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-teal-400 hover:text-teal-300 font-mono text-[10px] rounded transition uppercase">
+              Prune >30 Days
+            </button>
+            <button id="system-wipe-audit-btn" class="px-2.5 py-1 bg-red-950/20 border border-red-900/30 hover:bg-red-900/30 text-red-400 hover:text-red-300 font-mono text-[10px] rounded transition uppercase">
+              Clear Audit Logs
+            </button>
+          </div>
+        </div>
+        <div id="system-audit-logs-list" class="space-y-2 max-h-60 overflow-y-auto divide-y divide-slate-850/40 pr-1">
+          <!-- Dynamic audit logs will render here -->
+        </div>
+      </div>
     </div>
   `;
 
@@ -2373,9 +3933,7 @@ function renderSystemView(container: HTMLElement) {
   const exportWebZipBtn = document.getElementById('system-export-web-zip-btn')!;
   const exportCsvBtn = document.getElementById('system-export-csv-btn')!;
   const exportHtmlBtn = document.getElementById('system-export-html-btn')!;
-  const importFile = document.getElementById('system-import-file') as HTMLInputElement;
-  const importMdFiles = document.getElementById('system-import-md-files') as HTMLInputElement;
-  const importCsvFile = document.getElementById('system-import-csv-file') as HTMLInputElement;
+  const unifiedImportInput = document.getElementById('system-unified-import-file') as HTMLInputElement;
   const resetBtn = document.getElementById('system-reset-btn')!;
   const statsLabel = document.getElementById('total-articles-telemetry')!;
   const diagnosticsContainer = document.getElementById('db-health-diagnostics')!;
@@ -2387,6 +3945,9 @@ function renderSystemView(container: HTMLElement) {
     runDatabaseDiagnostics(diagnosticsContainer);
   }
 
+  // Render tag theme palette manager controls
+  renderTagColorManager();
+
   const getScopedPages = (): WikiPage[] => {
     const filterSelect = document.getElementById('export-tag-filter') as HTMLSelectElement;
     const selectedTag = filterSelect?.value || 'ALL';
@@ -2396,15 +3957,42 @@ function renderSystemView(container: HTMLElement) {
   };
 
   // Export database JSON handler
-  exportBtn.addEventListener('click', () => {
+  exportBtn.addEventListener('click', async () => {
     const pagesToExport = getScopedPages();
-    const dataStr = JSON.stringify(pagesToExport, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
+    const password = prompt('Secure Backup: Enter a password to encrypt this database backup file (leave blank for plain JSON):');
+    let finalBlob: Blob;
+    let filename = `secops-wiki-backup-${Date.now()}.json`;
     
+    if (password) {
+      try {
+        const key = await deriveKey(password);
+        const dataStr = JSON.stringify(pagesToExport, null, 2);
+        const ciphertext = await encryptText(dataStr, key);
+        const encryptedBackup = {
+          encrypted: true,
+          schemaVersion: 4,
+          payload: ciphertext
+        };
+        finalBlob = new Blob([JSON.stringify(encryptedBackup, null, 2)], { type: 'application/json' });
+        filename = `secops-wiki-encrypted-backup-${Date.now()}.json`;
+      } catch (err: any) {
+        alert(`Backup encryption failed: ${err.message}`);
+        return;
+      }
+    } else {
+      if (password === null) return;
+      const plaintextBackup = {
+        encrypted: false,
+        schemaVersion: 4,
+        payload: pagesToExport
+      };
+      finalBlob = new Blob([JSON.stringify(plaintextBackup, null, 2)], { type: 'application/json' });
+    }
+    
+    const url = URL.createObjectURL(finalBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `secops-wiki-backup-${Date.now()}.json`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     
@@ -2500,141 +4088,17 @@ encrypted: ${!!page.isEncrypted}
     URL.revokeObjectURL(url);
   });
 
-  // Import JSON payload handler (Up to 100MB)
-  importFile.addEventListener('change', (event) => {
-    const file = (event.target as HTMLInputElement).files?.[0];
-    if (!file) return;
-
-    if (file.size > 100 * 1024 * 1024) {
-      alert('Ingestion failed: File size exceeds the secure ceiling of 100MB.');
-      return;
-    }
-
-    const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const json = JSON.parse(e.target?.result as string);
-        const items = Array.isArray(json) ? json : [json];
-
-        let importedCount = 0;
-        let skippedCount = 0;
-        let failCount = 0;
-
-        if (confirm(`SYSTEM INGESTION PROTOCOL: Import ${items.length} articles from JSON backup? Conflict mode: ${resolutionMode.toUpperCase()}`)) {
-          for (const item of items) {
-            try {
-              const success = await importWikiPage(item, resolutionMode);
-              if (success) importedCount++;
-              else skippedCount++;
-            } catch {
-              failCount++;
-            }
-          }
-          alert(`JSON INGESTION RESULTS:\n- Imported: ${importedCount}\n- Skipped: ${skippedCount}\n- Failed: ${failCount}`);
-          syncChannel.postMessage('refresh');
-          await refreshPagesList();
-          await renderLayout();
-        }
-      } catch (err: any) {
-        alert(`Ingestion failed: Schema violation. ${err.message}`);
+  // Unified File Import Ingestion handler
+  if (unifiedImportInput) {
+    unifiedImportInput.addEventListener('change', async (e) => {
+      const files = (e.target as HTMLInputElement).files;
+      if (files && files.length > 0) {
+        await handleFilesImport(files);
       }
-    };
-    reader.readAsText(file);
-  });
+    });
+  }
 
-  // Import Markdown Files handler
-  importMdFiles.addEventListener('change', async (event) => {
-    const files = (event.target as HTMLInputElement).files;
-    if (!files || files.length === 0) return;
-
-    const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
-    let successCount = 0;
-    let skippedCount = 0;
-    let failCount = 0;
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (file.size > 10 * 1024 * 1024) {
-        failCount++;
-        continue;
-      }
-
-      await new Promise<void>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          try {
-            const rawText = e.target?.result as string;
-            const wikiPage = parseMarkdownImport(file.name, rawText);
-            const success = await importWikiPage(wikiPage, resolutionMode);
-            if (success) successCount++;
-            else skippedCount++;
-          } catch {
-            failCount++;
-          }
-          resolve();
-        };
-        reader.readAsText(file);
-      });
-    }
-
-    alert(`MARKDOWN IMPORT RESULTS:\n- Imported: ${successCount}\n- Skipped: ${skippedCount}\n- Failed: ${failCount}`);
-    syncChannel.postMessage('refresh');
-    await refreshPagesList();
-    await renderLayout();
-  });
-
-  // Import CSV handler
-  importCsvFile.addEventListener('change', async (event) => {
-    const file = (event.target as HTMLInputElement).files?.[0];
-    if (!file) return;
-
-    if (file.size > 10 * 1024 * 1024) {
-      alert('Ingestion failed: CSV File exceeds secure limit of 10MB.');
-      return;
-    }
-
-    const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const text = e.target?.result as string;
-        const rows = parseCSV(text);
-        
-        if (rows.length === 0) {
-          throw new Error('No rows found in CSV file.');
-        }
-
-        let successCount = 0;
-        let skippedCount = 0;
-        let failCount = 0;
-
-        if (confirm(`SYSTEM INGESTION PROTOCOL: Import ${rows.length} records from CSV? Conflict mode: ${resolutionMode.toUpperCase()}`)) {
-          for (const row of rows) {
-            try {
-              const pageData = csvRowToWikiPage(row);
-              const success = await importWikiPage(pageData, resolutionMode);
-              if (success) successCount++;
-              else skippedCount++;
-            } catch {
-              failCount++;
-            }
-          }
-          alert(`CSV IMPORT RESULTS:\n- Imported: ${successCount}\n- Skipped: ${skippedCount}\n- Failed: ${failCount}`);
-          syncChannel.postMessage('refresh');
-          await refreshPagesList();
-          await renderLayout();
-        }
-      } catch (err: any) {
-        alert(`CSV Ingestion failed: ${err.message}`);
-      }
-    };
-    reader.readAsText(file);
-  });
-
-  // Drag & Drop event bindings
+  // Drag & Drop event bindings for unified ingestion
   ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
     dropZone.addEventListener(eventName, (e) => {
       e.preventDefault();
@@ -2657,222 +4121,309 @@ encrypted: ${!!page.isEncrypted}
   dropZone.addEventListener('drop', async (e) => {
     const dt = e.dataTransfer;
     const files = dt?.files;
-    if (!files || files.length === 0) return;
-    
-    const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
-    let mdSuccess = 0, csvSuccess = 0, jsonSuccess = 0;
-    let mdSkip = 0, csvSkip = 0, jsonSkip = 0;
-    let mdFail = 0, csvFail = 0, jsonFail = 0;
-    
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const ext = file.name.split('.').pop()?.toLowerCase();
-      
-      if (ext === 'md') {
-        await new Promise<void>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = async (event) => {
-            try {
-              const rawText = event.target?.result as string;
-              const wikiPage = parseMarkdownImport(file.name, rawText);
-              const success = await importWikiPage(wikiPage, resolutionMode);
-              if (success) mdSuccess++;
-              else mdSkip++;
-            } catch {
-              mdFail++;
-            }
-            resolve();
-          };
-          reader.readAsText(file);
-        });
-      } else if (ext === 'csv') {
-        await new Promise<void>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = async (event) => {
-            try {
-              const text = event.target?.result as string;
-              const rows = parseCSV(text);
-              for (const row of rows) {
-                try {
-                  const pageData = csvRowToWikiPage(row);
-                  const success = await importWikiPage(pageData, resolutionMode);
-                  if (success) csvSuccess++;
-                  else csvSkip++;
-                } catch {
-                  csvFail++;
-                }
-              }
-            } catch {
-              csvFail++;
-            }
-            resolve();
-          };
-          reader.readAsText(file);
-        });
-      } else if (ext === 'json') {
-        await new Promise<void>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = async (event) => {
-            try {
-              const json = JSON.parse(event.target?.result as string);
-              const items = Array.isArray(json) ? json : [json];
-              for (const item of items) {
-                try {
-                  const success = await importWikiPage(item, resolutionMode);
-                  if (success) jsonSuccess++;
-                  else jsonSkip++;
-                } catch {
-                  jsonFail++;
-                }
-              }
-            } catch {
-              jsonFail++;
-            }
-            resolve();
-          };
-          reader.readAsText(file);
-        });
-      }
+    if (files && files.length > 0) {
+      await handleFilesImport(files);
     }
-    
-    alert(`DRAG & DROP IMPORT COMPLETED (Conflict resolution: ${resolutionMode.toUpperCase()}):\n\n` +
-          `Markdown (.md) files:\n- Ingested: ${mdSuccess}\n- Skipped: ${mdSkip}\n- Failed: ${mdFail}\n\n` +
-          `CSV files (rows):\n- Ingested: ${csvSuccess}\n- Skipped: ${csvSkip}\n- Failed: ${csvFail}\n\n` +
-          `JSON files (records):\n- Ingested: ${jsonSuccess}\n- Skipped: ${jsonSkip}\n- Failed: ${jsonFail}`);
-          
-    syncChannel.postMessage('refresh');
-    await refreshPagesList();
-    await renderLayout();
   });
-  
+
   dropZone.addEventListener('click', () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.multiple = true;
-    input.accept = '.md,.csv,.json';
-    input.onchange = async (event) => {
-      const selectedFiles = (event.target as HTMLInputElement).files;
-      if (!selectedFiles || selectedFiles.length === 0) return;
-      
-      const resolutionMode = (document.getElementById('import-conflict-resolution') as HTMLSelectElement)?.value || 'REVISION';
-      let mdSuccess = 0, csvSuccess = 0, jsonSuccess = 0;
-      let mdSkip = 0, csvSkip = 0, jsonSkip = 0;
-      let mdFail = 0, csvFail = 0, jsonFail = 0;
-      
-      for (let i = 0; i < selectedFiles.length; i++) {
-        const file = selectedFiles[i];
-        const ext = file.name.split('.').pop()?.toLowerCase();
-        
-        if (ext === 'md') {
-          await new Promise<void>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = async (event) => {
-              try {
-                const rawText = event.target?.result as string;
-                const wikiPage = parseMarkdownImport(file.name, rawText);
-                const success = await importWikiPage(wikiPage, resolutionMode);
-                if (success) mdSuccess++;
-                else mdSkip++;
-              } catch {
-                mdFail++;
-              }
-              resolve();
-            };
-            reader.readAsText(file);
-          });
-        } else if (ext === 'csv') {
-          await new Promise<void>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = async (event) => {
-              try {
-                const text = event.target?.result as string;
-                const rows = parseCSV(text);
-                for (const row of rows) {
-                  try {
-                    const pageData = csvRowToWikiPage(row);
-                    const success = await importWikiPage(pageData, resolutionMode);
-                    if (success) csvSuccess++;
-                    else csvSkip++;
-                  } catch {
-                    csvFail++;
-                  }
-                }
-              } catch {
-                csvFail++;
-              }
-              resolve();
-            };
-            reader.readAsText(file);
-          });
-        } else if (ext === 'json') {
-          await new Promise<void>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = async (event) => {
-              try {
-                const json = JSON.parse(event.target?.result as string);
-                const items = Array.isArray(json) ? json : [json];
-                for (const item of items) {
-                  try {
-                    const success = await importWikiPage(item, resolutionMode);
-                    if (success) jsonSuccess++;
-                    else jsonSkip++;
-                  } catch {
-                    jsonFail++;
-                  }
-                }
-              } catch {
-                jsonFail++;
-              }
-              resolve();
-            };
-            reader.readAsText(file);
-          });
-        }
-      }
-      
-      alert(`FILE SELECTION IMPORT COMPLETED (Conflict resolution: ${resolutionMode.toUpperCase()}):\n\n` +
-            `Markdown (.md) files:\n- Ingested: ${mdSuccess}\n- Skipped: ${mdSkip}\n- Failed: ${mdFail}\n\n` +
-            `CSV files (rows):\n- Ingested: ${csvSuccess}\n- Skipped: ${csvSkip}\n- Failed: ${csvFail}\n\n` +
-            `JSON files (records):\n- Ingested: ${jsonSuccess}\n- Skipped: ${jsonSkip}\n- Failed: ${jsonFail}`);
-            
-      syncChannel.postMessage('refresh');
-      await refreshPagesList();
-      await renderLayout();
-    };
-    input.click();
+    if (unifiedImportInput) {
+      unifiedImportInput.click();
+    }
   });
 
   // Hard reset database handler
   resetBtn.addEventListener('click', async () => {
     const confirmation = prompt('CRITICAL SECURITY WARNING: Type "WIPE" to verify you want to delete ALL wiki pages and custom documents:');
     if (confirmation === 'WIPE') {
-      const request = indexedDB.open('secops-wiki-db', 2);
-      request.onsuccess = async () => {
-        const db = request.result;
-        const transaction = db.transaction('pages', 'readwrite');
-        const store = transaction.objectStore('pages');
-        store.clear().onsuccess = async () => {
-          // Clear SW Cache (Fix 4)
-          if ('caches' in window) {
-            try {
-              const cacheNames = await caches.keys();
-              for (const name of cacheNames) {
-                await caches.delete(name);
-              }
-            } catch (err) {
-              console.warn('Failed to clear caches: ', err);
+      try {
+        await clearDatabase();
+        // Clear SW Cache (Fix 4)
+        if ('caches' in window) {
+          try {
+            const cacheNames = await caches.keys();
+            for (const name of cacheNames) {
+              await caches.delete(name);
             }
+          } catch (err) {
+            console.warn('Failed to clear caches: ', err);
           }
-          await seedDatabase();
-          alert('Database successfully wiped, caches invalidated, and seeded with standard operating defaults.');
-          syncChannel.postMessage('refresh');
-          await refreshPagesList();
-          window.location.hash = '#/page/home';
-        };
-      };
+        }
+        await seedDatabase();
+        await cacheTagColors();
+        alert('Database successfully wiped, caches invalidated, and seeded with standard operating defaults.');
+        localStorage.setItem('secops-wiki-last-update', Date.now().toString());
+        syncChannel.postMessage('refresh');
+        await refreshPagesList();
+        window.location.hash = '#/page/home';
+      } catch (err: any) {
+        alert(`Reset failed: ${err.message}`);
+      }
     } else if (confirmation !== null) {
       alert('Sanitization aborted. Confirmation keyword mismatch.');
     }
+  });
+
+  // Bind session timeout select changes
+  const timeoutSelect = document.getElementById('system-session-timeout-select') as HTMLSelectElement;
+  if (timeoutSelect) {
+    timeoutSelect.addEventListener('change', () => {
+      localStorage.setItem('secops-wiki-session-timeout', timeoutSelect.value);
+      resetInactivityTimeout();
+    });
+  }
+
+  // Bind PWA Cache Buster click handler
+  const cacheBustBtn = document.getElementById('system-cache-bust-btn');
+  if (cacheBustBtn) {
+    cacheBustBtn.addEventListener('click', async () => {
+      if (confirm('CRITICAL DIAGNOSTICS: Purge cached service worker registrations and static asset cache buckets? This triggers an immediate application reload.')) {
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const reg of regs) {
+            await reg.unregister();
+          }
+        }
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          for (const key of keys) {
+            await caches.delete(key);
+          }
+        }
+        alert('CACHE WIPE COMPLETED. Reloading system...');
+        window.location.reload();
+      }
+    });
+  }
+
+  // Bind settings listeners
+  const maskCheckbox = document.getElementById('system-mask-encrypted-checkbox') as HTMLInputElement;
+  if (maskCheckbox) {
+    maskCheckbox.addEventListener('change', () => {
+      maskEncryptedTitles = maskCheckbox.checked;
+      localStorage.setItem('secops-wiki-mask-encrypted', maskEncryptedTitles.toString());
+      refreshPagesList().then(() => {
+        renderLayout();
+      });
+    });
+  }
+
+  const dbEncryptCheckbox = document.getElementById('system-db-encrypted-checkbox') as HTMLInputElement;
+  if (dbEncryptCheckbox) {
+    dbEncryptCheckbox.addEventListener('change', async () => {
+      const checked = dbEncryptCheckbox.checked;
+      if (checked) {
+        const passphrase = prompt('Enter a new Master Passphrase to secure the database (min 8 chars, mixed case, numbers, symbols):');
+        if (!passphrase) {
+          dbEncryptCheckbox.checked = false;
+          return;
+        }
+        const strength = validatePasswordStrength(passphrase);
+        if (!strength.valid) {
+          alert(`SECURITY ERROR: Passphrase too weak.\n\n${strength.message}`);
+          dbEncryptCheckbox.checked = false;
+          return;
+        }
+        try {
+          const derivedKey = await deriveKey(passphrase);
+          activeMasterKey = derivedKey;
+          localStorage.setItem('secops-wiki-db-encrypted', 'true');
+          
+          const rawPages = await getAllPages();
+          for (const page of rawPages) {
+            if (!page.isEncryptedAtRest) {
+              await savePageSecure(page);
+            }
+          }
+          
+          alert('Database encryption successfully activated. All records are encrypted at rest.');
+          await logSecurityEvent('DB_ENCRYPTION_ENABLED', 'Activated database encryption-at-rest.');
+          await refreshPagesList();
+          renderSystemView(container);
+        } catch (err: any) {
+          alert(`Activation failed: ${err.message}`);
+          dbEncryptCheckbox.checked = false;
+        }
+      } else {
+        const passphrase = prompt('Enter the current Master Passphrase to confirm decryption:');
+        if (!passphrase) {
+          dbEncryptCheckbox.checked = true;
+          return;
+        }
+        try {
+          const testKey = await deriveKey(passphrase);
+          const isCorrect = await verifyMasterKey(testKey);
+          if (!isCorrect) {
+            alert('Verification Failed: Incorrect master passphrase.');
+            dbEncryptCheckbox.checked = true;
+            return;
+          }
+          
+          const decryptedPages = await getAllPagesSecure();
+          localStorage.setItem('secops-wiki-db-encrypted', 'false');
+          localStorage.removeItem('secops-wiki-webauthn-gate');
+          localStorage.removeItem('secops-wiki-webauthn-payload');
+          localStorage.removeItem('secops-wiki-webauthn-salt');
+          activeMasterKey = null;
+          
+          for (const page of decryptedPages) {
+            const plaintextPage: WikiPage = {
+              slug: page.slug,
+              title: page.title,
+              content: page.content,
+              tags: page.tags,
+              isSystem: page.isSystem,
+              isEncrypted: page.isEncrypted,
+              signature: page.signature,
+              updatedAt: page.updatedAt
+            };
+            await savePage(plaintextPage);
+          }
+          
+          alert('Database encryption-at-rest successfully deactivated.');
+          await logSecurityEvent('DB_ENCRYPTION_DISABLED', 'Deactivated database encryption-at-rest.');
+          await refreshPagesList();
+          renderSystemView(container);
+        } catch (err: any) {
+          alert(`Deactivation failed: ${err.message}`);
+          dbEncryptCheckbox.checked = true;
+        }
+      }
+    });
+  }
+
+  const webauthnBtn = document.getElementById('system-webauthn-register-btn');
+  if (webauthnBtn) {
+    webauthnBtn.addEventListener('click', async () => {
+      const isRegistered = localStorage.getItem('secops-wiki-webauthn-gate') === 'true';
+      if (isRegistered) {
+        if (confirm('Are you sure you want to deregister biometric credentials?')) {
+          localStorage.removeItem('secops-wiki-webauthn-gate');
+          localStorage.removeItem('secops-wiki-webauthn-payload');
+          localStorage.removeItem('secops-wiki-webauthn-salt');
+          alert('Biometric unlock credentials removed.');
+          await logSecurityEvent('WEBAUTHN_DEREGISTER', 'Removed biometric credentials.');
+          renderSystemView(container);
+        }
+      } else {
+        await registerBiometricUnlock();
+      }
+    });
+  }
+
+  renderAuditLogsConsole();
+
+  const pruneAuditBtn = document.getElementById('system-prune-audit-btn');
+  if (pruneAuditBtn) {
+    pruneAuditBtn.addEventListener('click', async () => {
+      if (confirm('Audit Log Pruning: Confirm deletion of security logs older than 30 days?')) {
+        await pruneAuditLogs(30);
+        await logSecurityEvent('AUDIT_LOG_PRUNED', 'Manually pruned audit logs older than 30 days.');
+        await renderAuditLogsConsole();
+        alert('Audit logs successfully pruned.');
+      }
+    });
+  }
+
+  const clearAuditBtn = document.getElementById('system-wipe-audit-btn');
+  if (clearAuditBtn) {
+    clearAuditBtn.addEventListener('click', async () => {
+      if (confirm('CRITICAL ACTION: Are you sure you want to purge the security audit log registers?')) {
+        await clearAuditLogs();
+        await logSecurityEvent('AUDIT_LOG_CLEARED', 'Security audit log register cleared.');
+        await renderAuditLogsConsole();
+      }
+    });
+  }
+
+  // Render draft recovery console and bind its Wipe All button
+  renderDraftRecoveryConsole();
+
+  const wipeAllDraftsBtn = document.getElementById('system-wipe-all-drafts-btn');
+  if (wipeAllDraftsBtn) {
+    wipeAllDraftsBtn.addEventListener('click', () => {
+      if (confirm('CRITICAL WARN: Purge all unsaved document draft fragments in local storage?')) {
+        const draftKeys = [];
+        for (let k = 0; k < localStorage.length; k++) {
+          const key = localStorage.key(k) || '';
+          if (key.startsWith('secops-wiki-draft-')) {
+            draftKeys.push(key);
+          }
+        }
+        draftKeys.forEach(k => localStorage.removeItem(k));
+        renderDraftRecoveryConsole();
+      }
+    });
+  }
+}
+
+function renderDraftRecoveryConsole() {
+  const listContainer = document.getElementById('system-drafts-recovery-list');
+  if (!listContainer) return;
+  
+  const draftKeys: string[] = [];
+  for (let k = 0; k < localStorage.length; k++) {
+    const key = localStorage.key(k) || '';
+    if (key.startsWith('secops-wiki-draft-')) {
+      draftKeys.push(key);
+    }
+  }
+  
+  const drafts = draftKeys.map(key => {
+    try {
+      const raw = localStorage.getItem(key) || '';
+      const data = JSON.parse(raw);
+      const slug = key.substring('secops-wiki-draft-'.length);
+      return { key, slug, title: data.title || '(Untitled)', updatedAt: data.updatedAt || Date.now(), size: raw.length };
+    } catch {
+      return null;
+    }
+  }).filter(d => d !== null);
+  
+  if (drafts.length === 0) {
+    listContainer.innerHTML = `<p class="text-xs font-mono text-slate-500">No unsaved drafts found in local storage.</p>`;
+    return;
+  }
+  
+  listContainer.innerHTML = drafts.map(draft => `
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 first:pt-0">
+      <div class="min-w-0">
+        <p class="text-xs font-mono text-slate-350 truncate">DRAFT // ${escapeHtml(draft.title)}</p>
+        <div class="flex items-center gap-2 mt-1 text-[9px] font-mono text-slate-500 uppercase">
+          <span>SLUG: ${escapeHtml(draft.slug)}</span>
+          <span>•</span>
+          <span>SIZE: ${draft.size} B</span>
+          <span>•</span>
+          <span>SAVED: ${new Date(draft.updatedAt).toLocaleString()}</span>
+        </div>
+      </div>
+      <div class="flex gap-2 shrink-0 self-start sm:self-auto">
+        <button class="draft-action-restore px-2 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-teal-400 hover:text-teal-300 font-mono text-[10px] rounded transition uppercase" data-slug="${escapeHtml(draft.slug)}">
+          Restore
+        </button>
+        <button class="draft-action-wipe px-2 py-1 bg-red-950/20 border border-red-900/30 hover:bg-red-900/30 text-red-400 hover:text-red-300 font-mono text-[10px] rounded transition uppercase" data-key="${escapeHtml(draft.key)}">
+          Wipe
+        </button>
+      </div>
+    </div>
+  `).join('');
+  
+  listContainer.querySelectorAll('.draft-action-restore').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const slug = (e.currentTarget as HTMLButtonElement).getAttribute('data-slug')!;
+      isEditing = true;
+      isNewPage = (slug === 'new');
+      currentPageSlug = slug;
+      window.location.hash = isNewPage ? '#/new' : `#/edit/${slug}`;
+    });
+  });
+  
+  listContainer.querySelectorAll('.draft-action-wipe').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const key = (e.currentTarget as HTMLButtonElement).getAttribute('data-key')!;
+      localStorage.removeItem(key);
+      renderDraftRecoveryConsole();
+    });
   });
 }
 
@@ -2986,7 +4537,7 @@ function renderPaletteResults() {
   let matchingPages: { page: WikiPage; score: number }[] = [];
   if (query) {
     matchingPages = wikiPagesList
-      .map(page => ({ page, score: scoreSearchResult(page, query) }))
+      .map(page => ({ page, score: scoreSearchResult(decryptedSearchIndex.find(dp => dp.slug === page.slug) || page, query) }))
       .filter(item => item.score > 0)
       .sort((a, b) => b.score - a.score);
   } else {
@@ -3187,7 +4738,7 @@ function insertAutocompleteLink(textarea: HTMLTextAreaElement, title: string, sl
 
 // 6. Interactive Checklist Click Handler
 async function toggleMarkdownCheckbox(slug: string, index: number, checked: boolean) {
-  const page = await getPage(slug);
+  const page = await getPageSecure(slug);
   if (!page) return;
 
   let content = page.content;
@@ -3226,7 +4777,8 @@ async function toggleMarkdownCheckbox(slug: string, index: number, checked: bool
   page.content = finalContent;
   page.updatedAt = Date.now();
 
-  await savePage(page);
+  page.signature = await computePageSignature(page);
+  await savePageSecure(page);
   
   syncChannel.postMessage('refresh');
   await refreshPagesList();
@@ -3281,6 +4833,11 @@ async function renderGraphView(container: HTMLElement) {
       <!-- Canvas Panel -->
       <div class="glass-panel border border-slate-800 rounded-xl p-4 flex flex-col items-center justify-center relative min-h-[500px]">
         <canvas id="tactical-map-canvas" class="w-full h-[500px] bg-slate-950/40 rounded-lg"></canvas>
+        
+        <!-- Search Input Overlay -->
+        <div class="absolute top-6 left-6 z-10 select-none max-w-[200px] sm:max-w-xs">
+          <input type="text" id="map-search-input" placeholder="Search map nodes..." class="w-full bg-slate-950/90 border border-slate-800 focus:border-teal-500/50 hover:border-slate-700 rounded-lg py-1.5 px-3 text-xs text-slate-200 focus:outline-none transition font-mono shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
+        </div>
         
         <!-- Controls Overlay -->
         <div class="absolute top-6 right-6 flex flex-col gap-2 z-10 select-none">
@@ -3379,6 +4936,14 @@ async function renderGraphView(container: HTMLElement) {
   let mouseY = 0;
   let animationId = 0;
 
+  let mapSearchQuery = '';
+  const mapSearchInput = document.getElementById('map-search-input') as HTMLInputElement;
+  if (mapSearchInput) {
+    mapSearchInput.addEventListener('input', (e) => {
+      mapSearchQuery = (e.target as HTMLInputElement).value.trim().toLowerCase();
+    });
+  }
+
   const kAttract = 0.02;
   const kRepel = 1200;
   const friction = 0.85;
@@ -3470,8 +5035,18 @@ async function renderGraphView(container: HTMLElement) {
       const n2 = nodes.find(n => n.id === link.target)!;
       if (!n1 || !n2) return;
 
+      const isQueryActive = mapSearchQuery.length > 0;
+      const isMatch1 = isQueryActive && n1.title.toLowerCase().includes(mapSearchQuery);
+      const isMatch2 = isQueryActive && n2.title.toLowerCase().includes(mapSearchQuery);
+
       const isHighlighted = (hoverNode && (hoverNode.id === n1.id || hoverNode.id === n2.id));
-      ctx.strokeStyle = isHighlighted ? 'rgba(20, 184, 166, 0.6)' : 'rgba(30, 41, 59, 0.4)';
+      
+      let linkAlpha = 0.4;
+      if (isQueryActive) {
+        linkAlpha = (isMatch1 && isMatch2) ? 0.6 : 0.05;
+      }
+
+      ctx.strokeStyle = isHighlighted ? 'rgba(20, 184, 166, 0.6)' : `rgba(30, 41, 59, ${linkAlpha})`;
       ctx.lineWidth = isHighlighted ? 1.5 / zoom : 1 / zoom;
 
       ctx.beginPath();
@@ -3482,7 +5057,26 @@ async function renderGraphView(container: HTMLElement) {
 
     nodes.forEach(n => {
       ctx.beginPath();
-      ctx.arc(n.x, n.y, n.radius, 0, 2 * Math.PI);
+      
+      const isQueryActive = mapSearchQuery.length > 0;
+      const isMatch = isQueryActive && n.title.toLowerCase().includes(mapSearchQuery);
+      
+      let currentRadius = n.radius;
+      let alpha = 1.0;
+      let pulseGlow = 0;
+      
+      if (isQueryActive) {
+        if (isMatch) {
+          const pulse = Math.sin(Date.now() / 150) * 2 + 3;
+          currentRadius = n.radius + pulse;
+          pulseGlow = 15;
+          alpha = 1.0;
+        } else {
+          alpha = 0.2;
+        }
+      }
+
+      ctx.arc(n.x, n.y, currentRadius, 0, 2 * Math.PI);
       
       let fillColor = '#14b8a6';
       let shadowColor = 'rgba(20, 184, 166, 0.4)';
@@ -3495,22 +5089,27 @@ async function renderGraphView(container: HTMLElement) {
       }
 
       ctx.fillStyle = fillColor;
+      ctx.globalAlpha = alpha;
       ctx.shadowColor = shadowColor;
-      ctx.shadowBlur = hoverNode === n ? 12 : 6;
+      ctx.shadowBlur = hoverNode === n ? 12 : (pulseGlow || 6);
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.1 * alpha})`;
       ctx.lineWidth = 1.5 / zoom;
       ctx.stroke();
 
-      ctx.fillStyle = hoverNode === n ? '#ffffff' : '#94a3b8';
-      ctx.font = hoverNode === n ? `bold ${10 / zoom}px monospace` : `${9 / zoom}px monospace`;
+      const isRedacted = n.isEncrypted && !activeCryptoKey && maskEncryptedTitles;
+      const nodeTitle = isRedacted ? '[REDACTED CORE]' : n.title;
+
+      ctx.fillStyle = hoverNode === n || isMatch ? `rgba(255, 255, 255, ${alpha})` : `rgba(148, 163, 184, ${alpha})`;
+      ctx.font = hoverNode === n || isMatch ? `bold ${10 / zoom}px monospace` : `${9 / zoom}px monospace`;
       ctx.textAlign = 'center';
-      ctx.fillText(n.title, n.x, n.y - n.radius - (5 / zoom));
+      ctx.fillText(nodeTitle, n.x, n.y - currentRadius - (5 / zoom));
     });
 
     ctx.restore();
+    ctx.globalAlpha = 1.0; // Reset global alpha
   }
 
   function loop() {
@@ -3630,7 +5229,7 @@ async function runDatabaseDiagnostics(container: HTMLElement) {
     <div class="text-xs font-mono text-slate-500 animate-pulse">Running security & link integrity scan...</div>
   `;
 
-  const pages = await getAllPages();
+  const pages = await getAllPagesSecure();
   
   let totalBytes = 0;
   const encoder = new TextEncoder();
@@ -3731,4 +5330,1077 @@ async function runDatabaseDiagnostics(container: HTMLElement) {
 }
 
 // Kickstart App on Content Loaded
+
+// ==========================================
+// PHASE 4: ENTERPRISE ENHANCEMENTS
+// ==========================================
+
+let decryptedSearchIndex: WikiPage[] = [];
+
+async function rebuildSearchIndex() {
+  decryptedSearchIndex = [];
+  for (const page of wikiPagesList) {
+    let content = page.content;
+    let title = page.title;
+    if (page.isEncrypted && activeCryptoKey && page.slug === currentPageSlug) {
+      try {
+        content = await decryptText(page.content, activeCryptoKey);
+      } catch {}
+    }
+    decryptedSearchIndex.push({
+      ...page,
+      content,
+      title
+    });
+  }
+}
+
+async function saveRevisionSecure(rev: PageRevision): Promise<void> {
+  const isDbEncrypted = localStorage.getItem('secops-wiki-db-encrypted') === 'true';
+  if (isDbEncrypted && activeMasterKey) {
+    const plaintextData = {
+      title: rev.title,
+      content: rev.content,
+      isEncrypted: rev.isEncrypted,
+      updatedAt: rev.updatedAt,
+      tags: rev.tags,
+      classification: rev.classification,
+      signature: rev.signature
+    };
+    const encryptedStr = await encryptText(JSON.stringify(plaintextData), activeMasterKey);
+    const encryptedRev: PageRevision = {
+      id: rev.id,
+      slug: rev.slug,
+      title: '[REDACTED AT REST]',
+      content: '[REDACTED AT REST]',
+      updatedAt: rev.updatedAt,
+      isEncryptedAtRest: true,
+      encryptedData: encryptedStr
+    };
+    await saveRevision(encryptedRev);
+  } else {
+    await saveRevision(rev);
+  }
+
+  // Compact historical revisions (retaining maximum 20 revisions)
+  try {
+    const allRevs = await getPageRevisions(rev.slug);
+    if (allRevs.length > 20) {
+      for (let i = 20; i < allRevs.length; i++) {
+        await deleteRevision(allRevs[i].id);
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to compact revisions for slug:', rev.slug, err);
+  }
+}
+
+async function getPageRevisionsSecure(slug: string): Promise<PageRevision[]> {
+  const rawRevs = await getPageRevisions(slug);
+  const revs: PageRevision[] = [];
+  for (const rev of rawRevs) {
+    if (rev.isEncryptedAtRest && rev.encryptedData) {
+      if (!activeMasterKey) {
+        revs.push({
+          id: rev.id,
+          slug: rev.slug,
+          title: '[DATABASE LOCKED]',
+          content: 'Master passphrase required to unlock this database record.',
+          updatedAt: rev.updatedAt,
+          isEncrypted: false
+        });
+        continue;
+      }
+      try {
+        const decryptedStr = await decryptText(rev.encryptedData, activeMasterKey);
+        const decryptedData = JSON.parse(decryptedStr);
+        revs.push({
+          id: rev.id,
+          slug: rev.slug,
+          title: decryptedData.title,
+          content: decryptedData.content,
+          updatedAt: decryptedData.updatedAt,
+          isEncrypted: decryptedData.isEncrypted,
+          tags: decryptedData.tags,
+          classification: decryptedData.classification,
+          signature: decryptedData.signature
+        });
+      } catch (err) {
+        console.error('Failed to decrypt revision at rest:', err);
+      }
+    } else {
+      revs.push(rev);
+    }
+  }
+  return revs;
+}
+
+async function verifyMasterKey(key: CryptoKey): Promise<boolean> {
+  const rawPages = await getAllPages();
+  for (const p of rawPages) {
+    if (p.isEncryptedAtRest && p.encryptedData) {
+      try {
+        await decryptText(p.encryptedData, key);
+        return true; // decrypted at least one successfully
+      } catch {
+        return false;
+      }
+    }
+  }
+  return true; // assume correct if no encrypted records exist
+}
+
+function showMasterUnlockScreen() {
+  let unlockEl = document.getElementById('master-unlock-overlay');
+  if (!unlockEl) {
+    unlockEl = document.createElement('div');
+    unlockEl.id = 'master-unlock-overlay';
+    unlockEl.className = 'fixed inset-0 bg-[#060814]/98 backdrop-blur-xl z-[100] flex items-center justify-center p-4';
+    document.body.appendChild(unlockEl);
+  }
+  
+  const hasGate = localStorage.getItem('secops-wiki-webauthn-gate') === 'true';
+  const bioBtnHtml = hasGate ? `
+    <button type="button" id="master-unlock-biometric-btn" class="flex-1 py-2.5 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 font-mono text-xs uppercase rounded transition hover:text-white flex items-center justify-center gap-1.5">
+      <span>👤 TouchID/Hello</span>
+    </button>
+  ` : '';
+  
+  unlockEl.innerHTML = `
+    <div class="glass-panel border border-red-900/30 rounded-xl w-full max-w-md p-6 space-y-6 glow-border shadow-2xl text-center">
+      <div class="space-y-2">
+        <div class="w-16 h-16 bg-red-950/30 border border-red-900/50 rounded-full flex items-center justify-center mx-auto mb-2 text-red-500 animate-pulse">
+          <svg class="w-8 h-8" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+          </svg>
+        </div>
+        <h2 class="text-xl font-bold font-mono text-white uppercase tracking-wider">DATABASE LOCKED</h2>
+        <p class="text-xs text-slate-500 font-mono">This SecOps Wiki instance enforces database encryption-at-rest. Enter the master passphrase to derive the AES-GCM session key.</p>
+      </div>
+
+      <form id="master-unlock-form" class="space-y-4">
+        <input type="password" id="master-unlock-input" placeholder="Enter Master Passphrase..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-red-500/50 rounded-lg p-3 text-sm text-slate-200 focus:outline-none transition font-mono text-center">
+        <div id="master-unlock-error" class="text-[10px] text-red-400 font-mono hidden">INCORRECT PASSPHRASE - DECRYPTION KEY DERIVATION FAILED</div>
+        
+        <div class="flex gap-2 pt-2">
+          ${bioBtnHtml}
+          <button type="submit" class="flex-[2] py-2.5 bg-gradient-to-r from-red-700 to-rose-700 hover:from-red-600 hover:to-rose-600 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_15px_rgba(220,38,38,0.2)]">
+            Decrypt Database
+          </button>
+        </div>
+      </form>
+
+      <div class="border-t border-slate-900 pt-4 flex flex-col items-center gap-2">
+        <button id="master-unlock-wipe-btn" class="text-[10px] text-red-400 hover:text-red-300 font-mono uppercase underline">
+          Sanitize & Wipe Database
+        </button>
+      </div>
+    </div>
+  `;
+
+  const form = document.getElementById('master-unlock-form') as HTMLFormElement;
+  const input = document.getElementById('master-unlock-input') as HTMLInputElement;
+  const errDiv = document.getElementById('master-unlock-error')!;
+  const wipeBtn = document.getElementById('master-unlock-wipe-btn')!;
+  const bioBtn = document.getElementById('master-unlock-biometric-btn')!;
+
+  setTimeout(() => input?.focus(), 50);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errDiv.classList.add('hidden');
+    const pwd = input.value;
+    try {
+      const derivedKey = await deriveKey(pwd);
+      const isCorrect = await verifyMasterKey(derivedKey);
+      if (isCorrect) {
+        activeMasterKey = derivedKey;
+        unlockDatabaseRest();
+      } else {
+        errDiv.classList.remove('hidden');
+        input.value = '';
+        input.focus();
+        await logSecurityEvent('DECRYPT_FAIL', 'Master database unlock attempt with invalid passphrase.');
+      }
+    } catch (err: any) {
+      errDiv.textContent = `ERROR: ${err.message.toUpperCase()}`;
+      errDiv.classList.remove('hidden');
+    }
+  });
+
+  wipeBtn.addEventListener('click', async () => {
+    if (confirm('CRITICAL ACTION: Are you sure you want to completely wipe this database? All encrypted records and system procedures will be permanently deleted.')) {
+      const verify = prompt('Type "WIPE" to confirm sanitization:');
+      if (verify === 'WIPE') {
+        await clearDatabase();
+        await seedDatabase();
+        localStorage.removeItem('secops-wiki-db-encrypted');
+        localStorage.removeItem('secops-wiki-webauthn-gate');
+        localStorage.removeItem('secops-wiki-webauthn-payload');
+        localStorage.removeItem('secops-wiki-webauthn-salt');
+        activeMasterKey = null;
+        unlockEl.remove();
+        alert('Database successfully wiped and reset to default plaintext configuration.');
+        window.location.reload();
+      }
+    }
+  });
+
+  if (bioBtn) {
+    bioBtn.addEventListener('click', async () => {
+      await handleBiometricUnlock();
+    });
+  }
+}
+
+function unlockDatabaseRest() {
+  const unlockEl = document.getElementById('master-unlock-overlay');
+  if (unlockEl) {
+    unlockEl.remove();
+  }
+  logSecurityEvent('SESSION_UNLOCK', 'Database session unlocked and decrypted at rest.');
+  
+  refreshPagesList().then(() => {
+    setupIdleTracker();
+    setupCommandPalette();
+    window.addEventListener('hashchange', handleRoute);
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
+    handleRoute();
+  });
+}
+
+function setupAttachmentHandlers(textarea: HTMLTextAreaElement) {
+  const handleFile = async (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64Data = (reader.result as string).split(',')[1];
+      const id = `att-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      
+      let keyToUse = activeCryptoKey || activeMasterKey;
+      let finalData = base64Data;
+      
+      if (keyToUse) {
+        try {
+          finalData = await encryptText(base64Data, keyToUse);
+        } catch (err) {
+          console.error('Failed to encrypt attachment:', err);
+        }
+      }
+      
+      const att: Attachment = {
+        id,
+        name: file.name,
+        mimeType: file.type,
+        data: finalData
+      };
+      
+      await saveAttachment(att);
+      await logSecurityEvent('ATTACHMENT_SAVE', `Saved attachment ${file.name} (ID: ${id}, size: ${file.size} bytes).`);
+      
+      const insertText = file.type.startsWith('image/')
+        ? `![${file.name}](attachment://${id})`
+        : `[Attachment: ${file.name}](attachment://${id})`;
+      
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      textarea.value = textarea.value.substring(0, start) + insertText + textarea.value.substring(end);
+      textarea.selectionStart = textarea.selectionEnd = start + insertText.length;
+      textarea.dispatchEvent(new Event('input'));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  textarea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+  });
+
+  textarea.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i++) {
+        await handleFile(files[i]);
+      }
+    }
+  });
+
+  textarea.addEventListener('paste', async (e) => {
+    const items = e.clipboardData?.items;
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].kind === 'file') {
+          const file = items[i].getAsFile();
+          if (file) {
+            await handleFile(file);
+          }
+        }
+      }
+    }
+  });
+}
+
+async function resolveAttachments(container: HTMLElement) {
+  const imgs = container.querySelectorAll('img[src^="attachment://"]');
+  for (const img of Array.from(imgs) as HTMLImageElement[]) {
+    const id = img.src.replace('attachment://', '').split('/').pop() || '';
+    const att = await getAttachment(id);
+    if (att) {
+      const objectUrl = await decryptAttachmentToUrl(att);
+      if (objectUrl) {
+        img.src = objectUrl;
+      }
+    }
+  }
+
+  const links = container.querySelectorAll('a[href^="attachment://"]');
+  for (const link of Array.from(links) as HTMLAnchorElement[]) {
+    const id = link.href.replace('attachment://', '').split('/').pop() || '';
+    const att = await getAttachment(id);
+    if (att) {
+      const objectUrl = await decryptAttachmentToUrl(att);
+      if (objectUrl) {
+        link.href = objectUrl;
+        link.download = att.name;
+      }
+    }
+  }
+}
+
+async function decryptAttachmentToUrl(att: any): Promise<string | null> {
+  let rawBase64 = att.data;
+  if (rawBase64.includes(':')) {
+    let decrypted = null;
+    if (activeCryptoKey) {
+      try {
+        decrypted = await decryptText(rawBase64, activeCryptoKey);
+      } catch {}
+    }
+    if (!decrypted && activeMasterKey) {
+      try {
+        decrypted = await decryptText(rawBase64, activeMasterKey);
+      } catch {}
+    }
+    if (!decrypted) return null;
+    rawBase64 = decrypted;
+  }
+  
+  try {
+    const binary = atob(rawBase64);
+    const array = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      array[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([array], { type: att.mimeType });
+    return URL.createObjectURL(blob);
+  } catch (e) {
+    console.error('Failed to parse base64 for attachment:', e);
+    return null;
+  }
+}
+
+async function renderAuditLogsConsole() {
+  const listContainer = document.getElementById('system-audit-logs-list');
+  if (!listContainer) return;
+  
+  const logs = await getAllAuditLogs();
+  if (logs.length === 0) {
+    listContainer.innerHTML = `<p class="text-xs font-mono text-slate-500">No security audit logs found.</p>`;
+    return;
+  }
+  
+  listContainer.innerHTML = `
+    <table class="w-full text-[10px] font-mono text-slate-350">
+      <thead>
+        <tr class="border-b border-slate-800 text-slate-500 text-left">
+          <th class="py-1">TIMESTAMP</th>
+          <th class="py-1">EVENT TYPE</th>
+          <th class="py-1">DETAILS / DIAGNOSTICS</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-900/50">
+        ${logs.map(log => `
+          <tr class="hover:bg-slate-950/20">
+            <td class="py-1.5 text-slate-500 select-none">${new Date(log.timestamp).toLocaleString()}</td>
+            <td class="py-1.5 font-bold ${log.event.includes('FAIL') || log.event.includes('DELETE') || log.event.includes('WIPE') ? 'text-red-400' : 'text-teal-400'}">${escapeHtml(log.event)}</td>
+            <td class="py-1.5 text-slate-400 max-w-xs truncate" title="${escapeHtml(log.details)}">${escapeHtml(log.details)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function openDrawingCanvas(textarea: HTMLTextAreaElement) {
+  let modal = document.getElementById('drawing-canvas-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'drawing-canvas-modal';
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-50 flex items-center justify-center p-4';
+    document.body.appendChild(modal);
+  }
+  
+  modal.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl w-full max-w-2xl p-5 space-y-4 glow-border shadow-2xl flex flex-col">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 shrink-0">
+        <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider">Tactical Drawing Canvas</h3>
+        <span class="text-[10px] font-mono text-slate-500">Draw topologies, flows, or diagrams</span>
+      </div>
+      
+      <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950/60 p-2 border border-slate-850 rounded-lg shrink-0 select-none">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-[10px] font-mono text-slate-500 uppercase">Tool:</span>
+          <button id="draw-tool-pen" class="px-2 py-1 bg-teal-950/40 border border-teal-800 text-teal-400 font-mono text-[10px] rounded font-bold uppercase">Pen</button>
+          <button id="draw-tool-eraser" class="px-2 py-1 bg-slate-900 border border-slate-850 text-slate-400 font-mono text-[10px] rounded hover:text-white uppercase">Eraser</button>
+          <button id="draw-tool-line" class="px-2 py-1 bg-slate-900 border border-slate-850 text-slate-400 font-mono text-[10px] rounded hover:text-white uppercase">Line</button>
+          <button id="draw-tool-arrow" class="px-2 py-1 bg-slate-900 border border-slate-850 text-slate-400 font-mono text-[10px] rounded hover:text-white uppercase">Arrow</button>
+          <button id="draw-tool-rect" class="px-2 py-1 bg-slate-900 border border-slate-850 text-slate-400 font-mono text-[10px] rounded hover:text-white uppercase">Box</button>
+          <button id="draw-tool-circle" class="px-2 py-1 bg-slate-900 border border-slate-850 text-slate-400 font-mono text-[10px] rounded hover:text-white uppercase">Circle</button>
+        </div>
+        
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] font-mono text-slate-500 uppercase">Size:</span>
+          <select id="draw-brush-size" class="bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] font-mono text-slate-300 focus:outline-none cursor-pointer">
+            <option value="2">Thin (2px)</option>
+            <option value="5" selected>Medium (5px)</option>
+            <option value="10">Thick (10px)</option>
+            <option value="20">Marker (20px)</option>
+          </select>
+        </div>
+        
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] font-mono text-slate-500 uppercase">Color:</span>
+          <div class="flex gap-1" id="draw-color-palette">
+            <button class="w-4 h-4 rounded-full border border-white bg-white" data-color="#ffffff"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-teal-400" data-color="#2dd4bf"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-emerald-400" data-color="#34d399"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-blue-400" data-color="#60a5fa"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-amber-400" data-color="#fbbf24"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-red-400" data-color="#f87171"></button>
+          </div>
+        </div>
+        
+        <div class="flex items-center gap-1.5">
+          <button id="draw-undo-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 text-slate-400 hover:text-white font-mono text-[10px] rounded uppercase">Undo</button>
+          <button id="draw-redo-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 text-slate-400 hover:text-white font-mono text-[10px] rounded uppercase">Redo</button>
+          <button id="draw-clear-btn" class="px-2 py-1 bg-red-950/20 border border-red-900/30 text-red-400 hover:bg-red-900/30 font-mono text-[10px] rounded transition uppercase">Clear</button>
+        </div>
+      </div>
+      
+      <div class="bg-slate-950 border border-slate-850 rounded-lg overflow-hidden flex items-center justify-center p-2 min-h-[300px] flex-1 relative">
+        <canvas id="sketch-canvas" width="600" height="350" class="bg-slate-950 border border-slate-900 cursor-crosshair rounded shadow-inner block max-w-full max-h-[350px]"></canvas>
+      </div>
+      
+      <div class="flex justify-end gap-3 shrink-0 pt-2 border-t border-slate-800">
+        <button id="draw-cancel-btn" class="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 font-mono text-xs uppercase rounded transition hover:text-white">Cancel</button>
+        <button id="draw-save-btn" class="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.15)]">Save & Embed</button>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+
+  const canvas = document.getElementById('sketch-canvas') as HTMLCanvasElement;
+  const ctx = canvas.getContext('2d')!;
+  
+  const dpr = window.devicePixelRatio || 1;
+  const logicalWidth = 600;
+  const logicalHeight = 350;
+  
+  canvas.width = logicalWidth * dpr;
+  canvas.height = logicalHeight * dpr;
+  canvas.style.width = `${logicalWidth}px`;
+  canvas.style.height = `${logicalHeight}px`;
+  
+  ctx.scale(dpr, dpr);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 5;
+
+  ctx.fillStyle = '#060814';
+  ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+
+  let drawing = false;
+  let currentTool = 'pen'; // pen, eraser, line, arrow, rect, circle
+  let currentColor = '#ffffff';
+  let startX = 0;
+  let startY = 0;
+  let snapshot: ImageData;
+
+  // Undo/Redo History Stack
+  const undoStack: ImageData[] = [];
+  const redoStack: ImageData[] = [];
+
+  // Capture initial blank state
+  undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+
+  const getMousePos = (e: MouseEvent | TouchEvent) => {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    return {
+      x: (clientX - rect.left) * (logicalWidth / rect.width),
+      y: (clientY - rect.top) * (logicalHeight / rect.height)
+    };
+  };
+
+  const startDraw = (e: MouseEvent | TouchEvent) => {
+    drawing = true;
+    const pos = getMousePos(e);
+    startX = pos.x;
+    startY = pos.y;
+    
+    // Capture snapshot for shape previews
+    snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    
+    if (currentTool === 'pen' || currentTool === 'eraser') {
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+    }
+    e.preventDefault();
+  };
+
+  const draw = (e: MouseEvent | TouchEvent) => {
+    if (!drawing) return;
+    const pos = getMousePos(e);
+    const brushWidth = parseInt(sizeSelect.value, 10);
+    
+    if (currentTool === 'pen' || currentTool === 'eraser') {
+      ctx.lineTo(pos.x, pos.y);
+      ctx.strokeStyle = currentTool === 'eraser' ? '#060814' : currentColor;
+      ctx.lineWidth = brushWidth;
+      ctx.stroke();
+    } else {
+      // Restore previous state snapshot to clear last preview
+      ctx.putImageData(snapshot, 0, 0);
+      
+      // Draw shape preview
+      ctx.beginPath();
+      ctx.strokeStyle = currentColor;
+      ctx.lineWidth = brushWidth;
+      
+      if (currentTool === 'line') {
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+      } else if (currentTool === 'arrow') {
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+        
+        // Draw arrowhead at current pointer
+        const angle = Math.atan2(pos.y - startY, pos.x - startX);
+        const headLength = Math.max(10, brushWidth * 2.5);
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+        ctx.lineTo(pos.x - headLength * Math.cos(angle - Math.PI / 6), pos.y - headLength * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(pos.x - headLength * Math.cos(angle + Math.PI / 6), pos.y - headLength * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fillStyle = currentColor;
+        ctx.fill();
+      } else if (currentTool === 'rect') {
+        ctx.rect(startX, startY, pos.x - startX, pos.y - startY);
+        ctx.stroke();
+      } else if (currentTool === 'circle') {
+        const radius = Math.sqrt(Math.pow(pos.x - startX, 2) + Math.pow(pos.y - startY, 2));
+        ctx.arc(startX, startY, radius, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+    }
+    e.preventDefault();
+  };
+
+  const stopDraw = () => {
+    if (drawing) {
+      if (currentTool === 'pen' || currentTool === 'eraser') {
+        ctx.closePath();
+      }
+      drawing = false;
+      
+      // Save committed state to history stack
+      undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      redoStack.length = 0; // Clear redo history
+    }
+  };
+
+  const triggerUndo = () => {
+    if (undoStack.length > 1) {
+      const currentState = undoStack.pop()!;
+      redoStack.push(currentState);
+      const prevState = undoStack[undoStack.length - 1];
+      ctx.putImageData(prevState, 0, 0);
+    }
+  };
+
+  const triggerRedo = () => {
+    if (redoStack.length > 0) {
+      const nextState = redoStack.pop()!;
+      undoStack.push(nextState);
+      ctx.putImageData(nextState, 0, 0);
+    }
+  };
+
+  canvas.addEventListener('mousedown', startDraw);
+  canvas.addEventListener('mousemove', draw);
+  window.addEventListener('mouseup', stopDraw);
+
+  canvas.addEventListener('touchstart', startDraw, { passive: false });
+  canvas.addEventListener('touchmove', draw, { passive: false });
+  window.addEventListener('touchend', stopDraw);
+
+  // Bind keydown events for Ctrl+Z and Ctrl+Y
+  const handleCanvasKeydown = (e: KeyboardEvent) => {
+    if (e.ctrlKey && e.key === 'z') {
+      e.preventDefault();
+      triggerUndo();
+    } else if (e.ctrlKey && e.key === 'y') {
+      e.preventDefault();
+      triggerRedo();
+    }
+  };
+  window.addEventListener('keydown', handleCanvasKeydown);
+
+  // Tool buttons configuration
+  const tools = ['pen', 'eraser', 'line', 'arrow', 'rect', 'circle'];
+  const setTool = (tool: string) => {
+    currentTool = tool;
+    tools.forEach(t => {
+      const btn = document.getElementById(`draw-tool-${t}`)!;
+      if (t === tool) {
+        btn.className = 'px-2 py-1 bg-teal-950/40 border border-teal-800 text-teal-400 font-mono text-[10px] rounded font-bold uppercase';
+      } else {
+        btn.className = 'px-2 py-1 bg-slate-900 border border-slate-850 text-slate-400 font-mono text-[10px] rounded hover:text-white uppercase';
+      }
+    });
+  };
+
+  tools.forEach(t => {
+    const btn = document.getElementById(`draw-tool-${t}`)!;
+    btn.addEventListener('click', () => setTool(t));
+  });
+
+  const sizeSelect = document.getElementById('draw-brush-size') as HTMLSelectElement;
+  const clearBtn = document.getElementById('draw-clear-btn')!;
+  const cancelBtn = document.getElementById('draw-cancel-btn')!;
+  const saveBtn = document.getElementById('draw-save-btn')!;
+  const colorPalette = document.getElementById('draw-color-palette')!;
+  const undoBtn = document.getElementById('draw-undo-btn')!;
+  const redoBtn = document.getElementById('draw-redo-btn')!;
+
+  colorPalette.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest('button');
+    if (btn) {
+      currentColor = btn.getAttribute('data-color') || '#ffffff';
+      colorPalette.querySelectorAll('button').forEach(b => b.classList.replace('border-white', 'border-transparent'));
+      btn.classList.replace('border-transparent', 'border-white');
+    }
+  });
+
+  clearBtn.addEventListener('click', () => {
+    if (confirm('Clear the canvas drawing?')) {
+      ctx.fillStyle = '#060814';
+      ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+      undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      redoStack.length = 0;
+    }
+  });
+
+  undoBtn.addEventListener('click', triggerUndo);
+  redoBtn.addEventListener('click', triggerRedo);
+
+  const cleanup = () => {
+    window.removeEventListener('mouseup', stopDraw);
+    window.removeEventListener('touchend', stopDraw);
+    window.removeEventListener('keydown', handleCanvasKeydown);
+    modal!.classList.add('hidden');
+  };
+
+  cancelBtn.addEventListener('click', cleanup);
+
+  saveBtn.addEventListener('click', () => {
+    const dataUrl = canvas.toDataURL('image/png');
+    const markdown = `![Tactical Sketch](${dataUrl})`;
+    
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    textarea.value = textarea.value.substring(0, start) + markdown + textarea.value.substring(end);
+    textarea.selectionStart = textarea.selectionEnd = start + markdown.length;
+    textarea.dispatchEvent(new Event('input'));
+    cleanup();
+  });
+}
+
+async function registerBiometricUnlock() {
+  if (!activeMasterKey) {
+    alert('Unlock Required: Unlock the database using your passphrase before registering biometric lock.');
+    return;
+  }
+  
+  const pwd = prompt('Verify Identity: Enter your current master passphrase to bind to biometric unlock:');
+  if (!pwd) return;
+  
+  const testKey = await deriveKey(pwd);
+  const isCorrect = await verifyMasterKey(testKey);
+  if (!isCorrect) {
+    alert('Verification Failed: Incorrect passphrase.');
+    return;
+  }
+  
+  try {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: "SecOps Wiki", id: window.location.hostname || "localhost" },
+        user: {
+          id: crypto.getRandomValues(new Uint8Array(16)),
+          name: "operator@secops.local",
+          displayName: "SecOps Operator"
+        },
+        pubKeyCredParams: [
+          { type: "public-key", alg: -7 },
+          { type: "public-key", alg: -257 }
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: "platform",
+          userVerification: "required"
+        },
+        timeout: 60000
+      }
+    }) as any;
+    
+    if (credential) {
+      const credIdBytes = new Uint8Array((credential as any).rawId);
+      const credIdHex = Array.from(credIdBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+      
+      const saltBytes = crypto.getRandomValues(new Uint8Array(32));
+      const saltHex = Array.from(saltBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem('secops-wiki-webauthn-salt', saltHex);
+      
+      const combinedEntropy = `${credIdHex}:${saltHex}`;
+      const encKey = await deriveKey(combinedEntropy);
+      const encryptedPwd = await encryptText(pwd, encKey);
+      
+      localStorage.setItem('secops-wiki-webauthn-payload', encryptedPwd);
+      localStorage.setItem('secops-wiki-webauthn-gate', 'true');
+      alert('Biometric credential successfully registered with WebAuthn platform gate.');
+      await logSecurityEvent('WEBAUTHN_REGISTER', 'Biometric credentials registered successfully.');
+      renderSystemView(document.getElementById('main-content')!);
+    }
+  } catch (e: any) {
+    alert(`Biometric registration failed: ${e.message}`);
+    await logSecurityEvent('WEBAUTHN_FAIL', `Biometric registration failed: ${e.message}`);
+  }
+}
+
+async function handleBiometricUnlock() {
+  const hasGate = localStorage.getItem('secops-wiki-webauthn-gate') === 'true';
+  const payload = localStorage.getItem('secops-wiki-webauthn-payload');
+  if (!hasGate || !payload) {
+    alert('Biometric Unlock is not registered. Setup biometric credentials in settings first.');
+    return;
+  }
+  
+  try {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        rpId: window.location.hostname || "localhost",
+        userVerification: "required",
+        timeout: 60000
+      }
+    });
+    
+    if (assertion) {
+      const credIdBytes = new Uint8Array((assertion as any).rawId);
+      const credIdHex = Array.from(credIdBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+      
+      const saltHex = localStorage.getItem('secops-wiki-webauthn-salt') || '';
+      if (!saltHex) {
+        throw new Error('Biometric decryption salt is missing from storage.');
+      }
+      
+      const combinedEntropy = `${credIdHex}:${saltHex}`;
+      const encKey = await deriveKey(combinedEntropy);
+      const decryptedPwd = await decryptText(payload, encKey);
+      const derivedKey = await deriveKey(decryptedPwd);
+      
+      const isCorrect = await verifyMasterKey(derivedKey);
+      if (isCorrect) {
+        activeMasterKey = derivedKey;
+        unlockDatabaseRest();
+      } else {
+        alert('Biometric validation failed: Stored credentials mismatch.');
+      }
+    }
+  } catch (e: any) {
+    alert(`Biometric verification failed: ${e.message}`);
+    await logSecurityEvent('WEBAUTHN_FAIL', `Biometric unlock failed: ${e.message}`);
+  }
+}
+
+interface TagTreeNode {
+  name: string;
+  fullPath: string;
+  children: { [name: string]: TagTreeNode };
+  pages: WikiPage[];
+}
+
+function buildTagTree(pages: WikiPage[]): TagTreeNode {
+  const root: TagTreeNode = { name: 'Root', fullPath: '', children: {}, pages: [] };
+  for (const page of pages) {
+    for (const tag of page.tags) {
+      const parts = tag.split('/');
+      let current = root;
+      let pathAccumulator = '';
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i].trim();
+        if (!part) continue;
+        pathAccumulator = pathAccumulator ? `${pathAccumulator}/${part}` : part;
+        if (!current.children[part]) {
+          current.children[part] = {
+            name: part,
+            fullPath: pathAccumulator,
+            children: {},
+            pages: []
+          };
+        }
+        current = current.children[part];
+      }
+      current.pages.push(page);
+    }
+  }
+  return root;
+}
+
+function renderTagTree(node: TagTreeNode, depth = 0): string {
+  let html = '';
+  const keys = Object.keys(node.children).sort();
+  
+  for (const key of keys) {
+    const child = node.children[key];
+    const hasChildren = Object.keys(child.children).length > 0 || child.pages.length > 0;
+    if (!hasChildren) continue;
+    
+    const path = child.fullPath;
+    html += `
+      <div class="tree-folder">
+        <div class="tree-folder-header flex items-center gap-1.5 px-3 py-1 cursor-pointer hover:bg-slate-900/40 text-xs font-mono text-slate-450 select-none rounded-lg" data-path="${escapeHtml(path)}" tabindex="0">
+          <span class="tree-folder-icon text-[9px] transition-transform duration-200 text-slate-600" style="display: inline-block;">▶</span>
+          <span>📁 ${escapeHtml(child.name)}</span>
+        </div>
+        <div class="tree-folder-children hidden pl-3.5 space-y-0.5 animate-fade-in" data-path="${escapeHtml(path)}">
+          ${renderTagTree(child, depth + 1)}
+          ${child.pages.map(p => {
+            const isActive = currentPageSlug === p.slug && !isEditing;
+            const isRedacted = p.isEncrypted && !activeCryptoKey && maskEncryptedTitles;
+            const displayTitle = isRedacted ? `[REDACTED CORE]` : p.title;
+            const targetHref = isRedacted ? 'javascript:void(0)' : `#/page/${p.slug}`;
+            const clickHandler = isRedacted ? `onclick="alert('SECURITY WARNING: Document is locked. Enter passphrase to decrypt cores first.');"` : '';
+            return `
+              <a href="${targetHref}" ${clickHandler} class="flex items-center justify-between px-3 py-1 rounded-lg text-[11px] font-mono transition ${isActive ? 'bg-teal-950/20 text-teal-400 font-bold border-l border-teal-500' : 'text-slate-450 hover:bg-slate-900/30 hover:text-slate-200'}" tabindex="0">
+                <span class="truncate flex items-center gap-1">
+                  ${p.isEncrypted ? '🔒' : '⊙'} ${escapeHtml(displayTitle)}
+                </span>
+              </a>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+  return html;
+}
+
+function setupSandboxes(container: HTMLElement) {
+  const codeElements = container.querySelectorAll('code.language-javascript-sandbox, code.language-html-sandbox');
+  codeElements.forEach((codeEl) => {
+    const pre = codeEl.parentElement;
+    if (!pre || pre.tagName.toLowerCase() !== 'pre') return;
+    if (pre.querySelector('.sandbox-run-btn')) return;
+    
+    const isHtml = codeEl.classList.contains('language-html-sandbox');
+    const code = codeEl.textContent || '';
+    
+    const runBtn = document.createElement('button');
+    runBtn.className = 'sandbox-run-btn absolute top-2 right-12 px-2 py-0.5 bg-teal-950/40 border border-teal-800 text-teal-400 hover:text-teal-300 font-mono text-[9px] rounded uppercase font-bold transition z-10';
+    runBtn.textContent = 'Run Sandbox';
+    
+    pre.classList.add('relative');
+    pre.appendChild(runBtn);
+    
+    const sandboxWrapper = document.createElement('div');
+    sandboxWrapper.className = 'sandbox-iframe-wrapper mt-2 hidden border border-slate-800 rounded-lg overflow-hidden bg-slate-950';
+    pre.after(sandboxWrapper);
+    
+    runBtn.addEventListener('click', () => {
+      const isHidden = sandboxWrapper.classList.toggle('hidden');
+      if (isHidden) {
+        runBtn.textContent = 'Run Sandbox';
+        sandboxWrapper.innerHTML = '';
+      } else {
+        runBtn.textContent = 'Close Sandbox';
+        sandboxWrapper.innerHTML = `
+          <div class="bg-slate-900 px-3 py-1 border-b border-slate-800 flex justify-between items-center text-[10px] font-mono text-slate-400 select-none">
+            <span>LIVE ISO-SANDBOX CONSOLE</span>
+            <button class="sandbox-close-inner-btn text-red-400 hover:text-red-300 font-bold">CLOSE</button>
+          </div>
+          <iframe sandbox="allow-scripts" class="w-full h-64 bg-slate-950" id="sandbox-frame-${Date.now()}"></iframe>
+        `;
+        
+        const iframe = sandboxWrapper.querySelector('iframe') as HTMLIFrameElement;
+        let iframeContent = '';
+        if (isHtml) {
+          iframeContent = code;
+        } else {
+          iframeContent = `
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <style>
+                  body {
+                    background-color: #060814;
+                    color: #cbd5e1;
+                    font-family: monospace;
+                    font-size: 12px;
+                    padding: 12px;
+                    margin: 0;
+                  }
+                  #console {
+                    white-space: pre-wrap;
+                  }
+                </style>
+              </head>
+              <body>
+                <div id="console"></div>
+                <script>
+                  const consoleDiv = document.getElementById('console');
+                  const log = (...args) => {
+                    consoleDiv.textContent += args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ') + '\\n';
+                  };
+                  window.console = {
+                    log: log,
+                    info: log,
+                    warn: log,
+                    error: log
+                  };
+                  try {
+                    ${code}
+                  } catch (err) {
+                    log('ERROR:', err.message);
+                  }
+                </script>
+              </body>
+            </html>
+          `;
+        }
+        iframe.srcdoc = iframeContent;
+        
+        sandboxWrapper.querySelector('.sandbox-close-inner-btn')?.addEventListener('click', () => {
+          sandboxWrapper.classList.add('hidden');
+          runBtn.textContent = 'Run Sandbox';
+          sandboxWrapper.innerHTML = '';
+        });
+      }
+    });
+  });
+}
+
+async function renderP2PImportView(container: HTMLElement) {
+  const hash = window.location.hash;
+  const queryIdx = hash.indexOf('?');
+  if (queryIdx === -1) {
+    container.innerHTML = `<div class="glass-panel border border-red-950 p-6 rounded-xl text-center font-mono text-xs text-red-400">P2P IMPORT ERROR: Missing decryption parameters in link.</div>`;
+    return;
+  }
+  
+  const urlParams = new URLSearchParams(hash.substring(queryIdx));
+  const dataBase64 = urlParams.get('data');
+  const sharePassword = urlParams.get('key');
+  
+  if (!dataBase64 || !sharePassword) {
+    container.innerHTML = `<div class="glass-panel border border-red-950 p-6 rounded-xl text-center font-mono text-xs text-red-400">P2P IMPORT ERROR: Invalid parameters.</div>`;
+    return;
+  }
+  
+  try {
+    const key = await deriveKey(sharePassword);
+    const encryptedStr = atob(decodeURIComponent(dataBase64));
+    const decryptedStr = await decryptText(encryptedStr, key);
+    const payload = JSON.parse(decryptedStr);
+    
+    container.innerHTML = `
+      <div class="glass-panel border border-teal-905 rounded-xl p-6 space-y-6 glow-border">
+        <div class="border-b border-slate-800 pb-4">
+          <h2 class="text-xl font-bold font-mono text-white uppercase">Secure P2P Page Import</h2>
+          <p class="text-xs text-slate-500 font-mono">Verify and import the decrypted document below into your offline storage.</p>
+        </div>
+        
+        <div class="space-y-4">
+          <div>
+            <label class="block text-[10px] font-mono text-slate-500 uppercase">Document Title:</label>
+            <div class="text-white font-mono text-sm font-bold mt-1">${escapeHtml(payload.title)}</div>
+          </div>
+          
+          <div>
+            <label class="block text-[10px] font-mono text-slate-500 uppercase">Associated Tags:</label>
+            <div class="flex gap-1.5 mt-1">
+              ${payload.tags.map((t: string) => `<span class="bg-slate-900/60 text-slate-400 border border-slate-850 px-2 py-0.5 rounded text-[10px] font-mono">#${escapeHtml(t)}</span>`).join('')}
+            </div>
+          </div>
+          
+          <div>
+            <label class="block text-[10px] font-mono text-slate-500 uppercase">Decrypted Content Preview:</label>
+            <div class="bg-slate-950/60 p-4 border border-slate-850 rounded-lg max-h-60 overflow-y-auto text-xs font-mono text-slate-350 wiki-content whitespace-pre-wrap mt-1">${escapeHtml(payload.content)}</div>
+          </div>
+        </div>
+        
+        <div class="flex justify-end gap-3 pt-4 border-t border-slate-800">
+          <a href="#/page/home" class="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 font-mono text-xs uppercase rounded transition hover:text-white">Cancel</a>
+          <button id="p2p-import-confirm-btn" class="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.15)]">Import to Database</button>
+        </div>
+      </div>
+    `;
+    
+    document.getElementById('p2p-import-confirm-btn')?.addEventListener('click', async () => {
+      let slug = payload.title.toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
+      if (!slug) slug = `p2p-import-${Date.now()}`;
+      
+      let newSlug = slug;
+      let check = await getPageSecure(newSlug);
+      if (check) {
+        const overwrite = confirm(`CONFLICT ALERT: A document with slug "${newSlug}" already exists in your wiki database.\n\nClick OK to overwrite the existing document.\nClick Cancel to import it as a duplicate under an auto-generated title.`);
+        if (!overwrite) {
+          let counter = 1;
+          while (check) {
+            newSlug = `${slug}-${counter}`;
+            check = await getPageSecure(newSlug);
+            counter++;
+          }
+        }
+      }
+      
+      const newPage: WikiPage = {
+        slug: newSlug,
+        title: payload.title,
+        content: payload.content,
+        tags: payload.tags,
+        updatedAt: Date.now()
+      };
+      
+      newPage.signature = await computePageSignature(newPage);
+      await savePageSecure(newPage);
+      await logSecurityEvent('P2P_IMPORT_SUCCESS', `Imported decrypted page: ${payload.title} (slug: ${newSlug})`);
+      alert('Intel Entry imported successfully.');
+      window.location.hash = `#/page/${newSlug}`;
+    });
+    
+  } catch (err: any) {
+    container.innerHTML = `<div class="glass-panel border border-red-950 p-6 rounded-xl text-center font-mono text-xs text-red-400">P2P DECRYPTION ERROR: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+
 document.addEventListener('DOMContentLoaded', init);
