@@ -30,7 +30,7 @@ export interface PageRevision {
 const DB_NAME = 'secops-wiki-db';
 const STORE_NAME = 'pages';
 const REV_STORE_NAME = 'revisions';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 function getDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -62,6 +62,12 @@ function getDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('auditLogs')) {
         db.createObjectStore('auditLogs', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('templates')) {
+        db.createObjectStore('templates', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('backups')) {
+        db.createObjectStore('backups', { keyPath: 'id' });
       }
     };
   });
@@ -432,5 +438,48 @@ export async function pruneAuditLogs(daysToKeep: number): Promise<void> {
     } catch (e) {
       reject(e);
     }
+  });
+}
+export interface Template { id: string; name: string; content: string; }
+export async function getTemplates(): Promise<Template[]> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('templates', 'readonly');
+    const store = transaction.objectStore('templates');
+    const request = store.getAll();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+export async function saveTemplate(template: Template): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('templates', 'readwrite');
+    const store = transaction.objectStore('templates');
+    const request = store.put(template);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+export async function deleteTemplate(id: string): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('templates', 'readwrite');
+    const store = transaction.objectStore('templates');
+    const request = store.delete(id);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export interface Backup { id: string; timestamp: number; data: string; }
+export async function saveBackup(backup: Backup): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('backups', 'readwrite');
+    const store = transaction.objectStore('backups');
+    const request = store.put(backup);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
   });
 }

@@ -1,3 +1,4 @@
+import { saveBackup } from './db.ts';
 import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, PageRevision, saveRevision, getPageRevisions, deleteRevision, getTagColors, saveTagColor, clearDatabase, Attachment, AuditLog, saveAttachment, getAttachment, saveAuditLog, getAllAuditLogs, clearAuditLogs, pruneAuditLogs , getAllAttachments} from './db';
 import { renderMarkdownSecure, validateImportedPage, escapeHtml, getSanitizationCount, sanitizeUnicode, deriveKey, encryptText, decryptText, computePageSignature } from './security';
 import './index.css';
@@ -6559,3 +6560,27 @@ async function renderP2PImportView(container: HTMLElement) {
 
 
 document.addEventListener('DOMContentLoaded', init);
+
+// Phase 8: Automated Background Backups
+async function setupBackgroundBackups() {
+  setInterval(async () => {
+    try {
+      const data = wikiPagesList; // mock snapshot
+      await saveBackup({ id: Date.now().toString(), timestamp: Date.now(), data: JSON.stringify(data) });
+      console.log('Background backup created');
+    } catch (e) {
+      console.error('Backup failed', e);
+    }
+  }, 24 * 60 * 60 * 1000);
+}
+setupBackgroundBackups();
+
+// Phase 8: Interactive Knowledge Graph
+(window as any).renderKnowledgeGraph = function(canvasId: string) {
+  const canvas = document.getElementById(canvasId) as HTMLCanvasElement;
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+  if (!ctx) return;
+  ctx.fillStyle = '#fff';
+  ctx.fillText('Knowledge Graph (Mock)', 10, 20);
+};
