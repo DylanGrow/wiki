@@ -535,3 +535,10 @@ html.light-theme textarea::placeholder {
   }
   .no-print { display: none !important; }
 }
+
+.prose table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
