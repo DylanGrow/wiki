@@ -661,9 +661,15 @@ async function init() {
 
   // Global command palette keyboard trigger listeners
   window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey && e.key === 'k') || (e.ctrlKey && e.key === 'K')) {
+    // Ctrl+K or Ctrl+P: open command palette
+    if ((e.ctrlKey && (e.key === 'k' || e.key === 'K' || e.key === 'p' || e.key === 'P'))) {
       e.preventDefault();
       toggleCommandPalette();
+    }
+    // Ctrl+N: new page
+    if (e.ctrlKey && (e.key === 'n' || e.key === 'N') && !e.shiftKey) {
+      e.preventDefault();
+      window.location.hash = '#/new';
     }
     if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
       e.preventDefault();
@@ -1185,6 +1191,13 @@ async function renderLayout() {
           </svg>
         </button>
 
+        <!-- Font Size Controls -->
+        <div class="hidden sm:flex items-center gap-0.5 bg-slate-950/80 border border-slate-800 rounded-lg overflow-hidden">
+          <button id="font-size-decrease-btn" class="px-2 py-1.5 text-slate-400 hover:text-white hover:bg-slate-900/50 transition text-xs font-mono font-bold" title="Decrease font size" aria-label="Decrease font size">A−</button>
+          <button id="font-size-reset-btn" class="px-1.5 py-1.5 text-slate-500 hover:text-white hover:bg-slate-900/50 transition text-[9px] font-mono border-x border-slate-800" title="Reset font size" aria-label="Reset font size">↺</button>
+          <button id="font-size-increase-btn" class="px-2 py-1.5 text-slate-400 hover:text-white hover:bg-slate-900/50 transition text-xs font-mono font-bold" title="Increase font size" aria-label="Increase font size">A+</button>
+        </div>
+
         <!-- PWA Install Button -->
         <button id="pwa-install-btn" class="hidden px-2.5 py-1.5 bg-gradient-to-r from-teal-600 to-cyan-600 text-[10px] md:text-xs text-white font-mono uppercase font-bold rounded hover:from-teal-500 hover:to-cyan-500 transition shadow-[0_0_10px_rgba(20,184,166,0.2)]">
           INSTALL
@@ -1216,7 +1229,7 @@ async function renderLayout() {
               </svg>
               <span class="text-xs text-slate-450">Search database...</span>
             </div>
-            <kbd class="text-[9px] bg-slate-900 border border-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono select-none uppercase scale-90">Ctrl+K</kbd>
+            <kbd class="text-[9px] bg-slate-900 border border-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono select-none uppercase scale-90">Ctrl+K/P</kbd>
           </button>
         </div>
 
@@ -1414,6 +1427,25 @@ async function renderLayout() {
   if (themeBtn) {
     themeBtn.addEventListener('click', toggleTheme);
   }
+
+  // Bind Font Size Controls (Accessibility)
+  const fontSizes = [12, 13, 14, 15, 16, 18, 20];
+  let currentFontSizeIdx = parseInt(localStorage.getItem('secops-wiki-font-size-idx') || '2', 10);
+  const applyFontSize = () => {
+    document.documentElement.style.setProperty('--wiki-font-size', fontSizes[currentFontSizeIdx] + 'px');
+    localStorage.setItem('secops-wiki-font-size-idx', currentFontSizeIdx.toString());
+  };
+  applyFontSize();
+  document.getElementById('font-size-increase-btn')?.addEventListener('click', () => {
+    if (currentFontSizeIdx < fontSizes.length - 1) { currentFontSizeIdx++; applyFontSize(); }
+  });
+  document.getElementById('font-size-decrease-btn')?.addEventListener('click', () => {
+    if (currentFontSizeIdx > 0) { currentFontSizeIdx--; applyFontSize(); }
+  });
+  document.getElementById('font-size-reset-btn')?.addEventListener('click', () => {
+    currentFontSizeIdx = 2; applyFontSize();
+  });
+
 
   // Bind Tag Filter badges
   document.querySelectorAll('.tag-badge').forEach(badge => {
@@ -1844,6 +1876,10 @@ async function renderPageView(container: HTMLElement) {
               </svg>
               <span class="hidden sm:inline">Modify</span>
             </a>
+            <button id="copy-page-link-btn" class="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-teal-500/50 hover:text-teal-400 text-slate-300 font-mono text-xs rounded transition uppercase" title="Copy page link">
+              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+              <span class="hidden sm:inline">🔗 Copy Link</span>
+            </button>
             ${!page.isSystem ? `
               <button id="delete-page-btn" class="flex items-center gap-1.5 px-3 py-1.5 bg-red-950/20 border border-red-900/30 hover:bg-red-900/30 text-red-400 hover:text-red-300 font-mono text-xs rounded transition uppercase">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -1860,6 +1896,8 @@ async function renderPageView(container: HTMLElement) {
         <article class="wiki-content prose prose-invert max-w-none">
           ${renderedContent}
         </article>
+        <!-- Related Pages (populated by JS) -->
+        <div id="related-pages-panel"></div>
 
         <!-- Revision History Database Panel -->
         <div class="border-t border-slate-800 mt-12 pt-6">
@@ -2303,10 +2341,57 @@ encrypted: ${!!page.isEncrypted}
     });
   });
 
+
   // Bind attachments & sandboxes
   await resolveAttachments(container);
   setupSandboxes(container);
+
+  // 7. Syntax Highlighting via Prism.js (if loaded from CDN/index.html)
+  try {
+    if ((window as any).Prism) {
+      (window as any).Prism.highlightAllUnder(container);
+    }
+  } catch { /* Prism not loaded */ }
+
+  // 3. Copy Page Link Button
+  const copyLinkBtn = document.getElementById('copy-page-link-btn');
+  if (copyLinkBtn) {
+    copyLinkBtn.addEventListener('click', async () => {
+      const url = window.location.origin + window.location.pathname + '#/page/' + page.slug;
+      try {
+        await navigator.clipboard.writeText(url);
+        copyLinkBtn.textContent = '✓ Copied!';
+        setTimeout(() => { copyLinkBtn.textContent = '🔗 Copy Link'; }, 2000);
+      } catch {
+        prompt('Copy this link:', url);
+      }
+    });
+  }
+
+  // 5. Related Pages Panel (render after main content)
+  const relatedContainer = document.getElementById('related-pages-panel');
+  if (relatedContainer && page.tags.length > 0) {
+    const relatedPages = wikiPagesList
+      .filter(p => p.slug !== page.slug && p.tags.some(t => page.tags.includes(t)))
+      .slice(0, 5);
+    if (relatedPages.length > 0) {
+      relatedContainer.innerHTML = `
+        <div class="border-t border-slate-800 mt-8 pt-6">
+          <p class="text-xs font-bold font-mono text-slate-400 uppercase tracking-widest mb-3">Related Intel</p>
+          <div class="flex flex-wrap gap-2">
+            ${relatedPages.map(rp => `
+              <a href="#/page/${rp.slug}" class="px-3 py-1.5 bg-slate-900/60 border border-slate-800 hover:border-teal-500/50 hover:text-teal-400 text-slate-400 font-mono text-xs rounded-lg transition flex items-center gap-1.5">
+                <span class="text-[9px]">${rp.isEncrypted ? '🔒' : '⊙'}</span>
+                ${escapeHtml(rp.title)}
+              </a>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+  }
 }
+
 
 // 2. Render Wiki Page Editor (Edit & New Page)
 async function renderEditView(container: HTMLElement) {
@@ -2723,7 +2808,55 @@ async function renderEditView(container: HTMLElement) {
     updatePreview();
     saveAutosaveDraft();
   });
+
+  // Ctrl+S: Save/submit the form
+  textarea.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      const form = document.getElementById('edit-page-form') as HTMLFormElement;
+      if (form) form.requestSubmit();
+      return;
+    }
+    // Tab key: insert 2 spaces instead of losing focus
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      textarea.value = textarea.value.substring(0, start) + '  ' + textarea.value.substring(end);
+      textarea.selectionStart = textarea.selectionEnd = start + 2;
+      updatePreview();
+      return;
+    }
+    // Ctrl+B: bold selected text
+    if (e.ctrlKey && (e.key === 'b' || e.key === 'B')) {
+      e.preventDefault();
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const sel = textarea.value.substring(start, end);
+      const replacement = `**${sel || 'bold'}**`;
+      textarea.value = textarea.value.substring(0, start) + replacement + textarea.value.substring(end);
+      textarea.selectionStart = start + 2;
+      textarea.selectionEnd = start + 2 + (sel || 'bold').length;
+      updatePreview();
+      return;
+    }
+    // Ctrl+I: italic selected text
+    if (e.ctrlKey && (e.key === 'i' || e.key === 'I')) {
+      e.preventDefault();
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const sel = textarea.value.substring(start, end);
+      const replacement = `*${sel || 'italic'}*`;
+      textarea.value = textarea.value.substring(0, start) + replacement + textarea.value.substring(end);
+      textarea.selectionStart = start + 1;
+      textarea.selectionEnd = start + 1 + (sel || 'italic').length;
+      updatePreview();
+      return;
+    }
+  });
+
   updatePreview(); // Initial render
+
 
   // Tag pill manager logic
   const pillsContainer = document.getElementById('tag-pills-container') as HTMLDivElement;
