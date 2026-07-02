@@ -12,7 +12,17 @@ let selectedTag = '';
 let wikiPagesList: WikiPage[] = [];
 let deferredInstallPrompt: any = null;
 let networkStatus = navigator.onLine ? 'SECURE_LINK' : 'OFFLINE_CACHE';
-let currentTheme = localStorage.getItem('secops-wiki-theme') || 'dark';
+let currentTheme = localStorage.getItem('secops-wiki-theme') || 
+  (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+    if (!localStorage.getItem('secops-wiki-theme')) {
+      currentTheme = e.matches ? 'dark' : 'light';
+      applyTheme();
+    }
+  });
+}
 
 // Settings configuration states
 let maskEncryptedTitles = localStorage.getItem('secops-wiki-mask-encrypted') === 'true';
@@ -1014,12 +1024,15 @@ async function handleRoute() {
     currentPageSlug = 'graph';
   } else if (hash.startsWith('#/import-p2p')) {
     currentPageSlug = 'import-p2p';
+  } else if (hash === '#/audit-logs') {
+    currentPageSlug = 'audit-logs';
   } else {
     currentPageSlug = 'home';
   }
 
-  if (!isEditing && currentPageSlug && currentPageSlug !== 'system' && currentPageSlug !== 'graph') {
+  if (!isEditing && currentPageSlug && currentPageSlug !== 'system' && currentPageSlug !== 'graph' && currentPageSlug !== 'import-p2p' && currentPageSlug !== 'audit-logs') {
     updateRecentBreadcrumbs(currentPageSlug);
+    addToRecentPages(currentPageSlug);
   }
 
   await renderLayout();
@@ -1184,6 +1197,19 @@ async function renderLayout() {
           </div>
         </div>
 
+        <!-- Recent Pages Dropdown -->
+        <div class="relative inline-block text-left" id="recent-pages-dropdown-wrapper">
+          <button id="recent-pages-dropdown-btn" class="p-1.5 text-slate-400 hover:text-white rounded-lg focus:outline-none hover:bg-slate-900/50 transition flex items-center gap-1" aria-label="Recent Pages" title="Recent Pages">
+            <svg class="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </button>
+          <div id="recent-pages-menu" class="hidden absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-slate-950 border border-slate-800 ring-1 ring-black ring-opacity-5 z-25 divide-y divide-slate-800">
+            <div class="py-1 px-3 text-[10px] font-mono text-slate-500 uppercase tracking-wider">Recently Visited</div>
+            <div class="py-1" id="recent-pages-items-container"></div>
+          </div>
+        </div>
+
         <!-- Theme Toggle Button -->
         <button id="theme-toggle-btn" class="p-1.5 text-slate-400 hover:text-white rounded-lg focus:outline-none hover:bg-slate-900/50 transition" aria-label="Toggle Theme">
           <svg class="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -1308,6 +1334,22 @@ async function renderLayout() {
           </a>
         </div>
       </aside>
+
+    <!-- Floating Scratchpad Notepad Widget -->
+    <div id="floating-scratchpad" class="fixed bottom-4 right-4 z-40 bg-slate-950/95 border border-slate-800 rounded-xl shadow-2xl w-72 h-80 flex flex-col hidden transform transition-all duration-300 scale-95 opacity-0">
+      <div class="px-3 py-2 bg-slate-900 border-b border-slate-800 rounded-t-xl flex items-center justify-between cursor-move select-none" id="floating-scratchpad-header">
+        <span class="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">📋 Scratchpad</span>
+        <button id="floating-scratchpad-close" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
+      </div>
+      <textarea id="floating-scratchpad-content" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
+    </div>
+
+    <!-- Toggle button for Scratchpad -->
+    <button id="floating-scratchpad-toggle-btn" class="fixed bottom-4 right-4 z-40 p-3 bg-teal-600 hover:bg-teal-500 border border-teal-500 hover:border-teal-400 text-slate-950 hover:text-white rounded-full shadow-[0_0_15px_rgba(20,184,166,0.3)] transition focus:outline-none flex items-center justify-center" aria-label="Toggle scratchpad" title="Toggle scratchpad">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+      </svg>
+    </button>
 
       <!-- Center content portal -->
       <main class="flex-1 overflow-y-auto bg-gradient-to-b from-[#0a0f1d] to-[#090d16] p-4 md:p-8">
@@ -1547,6 +1589,11 @@ async function resolveContentView() {
 
   if (currentPageSlug === 'import-p2p') {
     await renderP2PImportView(contentPortal);
+    return;
+  }
+
+  if (currentPageSlug === 'audit-logs') {
+    await renderAuditLogView(contentPortal);
     return;
   }
 
@@ -1825,6 +1872,19 @@ async function renderPageView(container: HTMLElement) {
               ${integrityBadgeHtml}
               <span class="h-3 w-px bg-slate-800"></span>
               ${page.tags.map(tag => renderTagBadge(tag)).join('')}
+            </div>
+            ${(() => {
+              const keywords = getTopKeywords(page.content);
+              if (keywords.length > 0) {
+                return `
+                  <div class="flex flex-wrap items-center gap-1.5 mt-2">
+                    <span class="text-[9px] font-mono text-slate-500 uppercase font-bold">Key Terms:</span>
+                    ${keywords.map((kw: string) => `<span class="px-1.5 py-0.5 bg-slate-900 border border-slate-800 text-slate-400 rounded text-[9px] font-mono">${escapeHtml(kw)}</span>`).join('')}
+                  </div>
+                `;
+              }
+              return '';
+            })()}
             </div>
           </div>
           
@@ -3317,6 +3377,22 @@ function generateStaticWikiZip(pages: WikiPage[]): Blob {
       ${sidebarLinks}
     </div>
   </aside>
+
+    <!-- Floating Scratchpad Notepad Widget -->
+    <div id="floating-scratchpad" class="fixed bottom-4 right-4 z-40 bg-slate-950/95 border border-slate-800 rounded-xl shadow-2xl w-72 h-80 flex flex-col hidden transform transition-all duration-300 scale-95 opacity-0">
+      <div class="px-3 py-2 bg-slate-900 border-b border-slate-800 rounded-t-xl flex items-center justify-between cursor-move select-none" id="floating-scratchpad-header">
+        <span class="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">📋 Scratchpad</span>
+        <button id="floating-scratchpad-close" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
+      </div>
+      <textarea id="floating-scratchpad-content" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
+    </div>
+
+    <!-- Toggle button for Scratchpad -->
+    <button id="floating-scratchpad-toggle-btn" class="fixed bottom-4 right-4 z-40 p-3 bg-teal-600 hover:bg-teal-500 border border-teal-500 hover:border-teal-400 text-slate-950 hover:text-white rounded-full shadow-[0_0_15px_rgba(20,184,166,0.3)] transition focus:outline-none flex items-center justify-center" aria-label="Toggle scratchpad" title="Toggle scratchpad">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+      </svg>
+    </button>
   <main>
     <h1>SecOps Static Wiki Register</h1>
     <p style="margin-bottom: 2rem; color: #94a3b8; font-size: 0.85rem;">This is an offline-friendly static compilation of the active wiki database. Double-click any page in the sidebar or below to navigate.</p>
@@ -3443,6 +3519,22 @@ function generateStaticWikiZip(pages: WikiPage[]): Blob {
       ${sidebarLinks}
     </div>
   </aside>
+
+    <!-- Floating Scratchpad Notepad Widget -->
+    <div id="floating-scratchpad" class="fixed bottom-4 right-4 z-40 bg-slate-950/95 border border-slate-800 rounded-xl shadow-2xl w-72 h-80 flex flex-col hidden transform transition-all duration-300 scale-95 opacity-0">
+      <div class="px-3 py-2 bg-slate-900 border-b border-slate-800 rounded-t-xl flex items-center justify-between cursor-move select-none" id="floating-scratchpad-header">
+        <span class="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">📋 Scratchpad</span>
+        <button id="floating-scratchpad-close" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
+      </div>
+      <textarea id="floating-scratchpad-content" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
+    </div>
+
+    <!-- Toggle button for Scratchpad -->
+    <button id="floating-scratchpad-toggle-btn" class="fixed bottom-4 right-4 z-40 p-3 bg-teal-600 hover:bg-teal-500 border border-teal-500 hover:border-teal-400 text-slate-950 hover:text-white rounded-full shadow-[0_0_15px_rgba(20,184,166,0.3)] transition focus:outline-none flex items-center justify-center" aria-label="Toggle scratchpad" title="Toggle scratchpad">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+      </svg>
+    </button>
   <main>
     <h1>${escapeHtml(p.title)}</h1>
     <div class="metadata">
@@ -4025,6 +4117,14 @@ function renderSystemView(container: HTMLElement) {
             <li class="flex justify-between">
               <span class="text-slate-500">TOTAL ARTICLES:</span>
               <span class="text-teal-400 font-bold" id="total-articles-telemetry">Calculating...</span>
+            </li>
+            <li class="flex justify-between">
+              <span class="text-slate-500">TOTAL UNIQUE TAGS:</span>
+              <span class="text-teal-400 font-bold" id="total-tags-telemetry">Calculating...</span>
+            </li>
+            <li class="flex justify-between">
+              <span class="text-slate-500">TOTAL WORD COUNT:</span>
+              <span class="text-teal-400 font-bold" id="total-words-telemetry">Calculating...</span>
             </li>
             <li class="flex justify-between">
               <span class="text-slate-500">INDEX DB ALLOCATION:</span>
@@ -6717,3 +6817,171 @@ setupBackgroundBackups();
   ctx.fillStyle = '#fff';
   ctx.fillText('Knowledge Graph (Mock)', 10, 20);
 };
+
+// Phase 10 Helper Functions Definitions
+export function addToRecentPages(slug: string) {
+  let recents: string[] = JSON.parse(localStorage.getItem('secops-recent-pages') || '[]');
+  recents = recents.filter(s => s !== slug);
+  recents.unshift(slug);
+  recents = recents.slice(0, 5);
+  localStorage.setItem('secops-recent-pages', JSON.stringify(recents));
+}
+
+export function getTopKeywords(text: string): string[] {
+  const cleanText = text
+    .replace(/[#*`_\[\]()\-+]/g, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .toLowerCase();
+  
+  const stopwords = new Set([
+    'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'to', 'for', 'in', 'on', 'at', 'by', 'of', 'with', 'from',
+    'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their', 'we', 'us', 'our', 'you', 'your', 'i', 'my', 'me',
+    'he', 'him', 'his', 'she', 'her', 'has', 'have', 'had', 'do', 'does', 'did', 'as', 'if', 'then', 'else', 'when', 'where',
+    'how', 'why', 'who', 'which', 'what', 'not', 'no', 'yes', 'can', 'will', 'should', 'would', 'could', 'may', 'might',
+    'must', 'about', 'into', 'than', 'also', 'some', 'any', 'all', 'more', 'most', 'other', 'been', 'being'
+  ]);
+  
+  const words = cleanText.split(/\s+/);
+  const counts: { [word: string]: number } = {};
+  
+  words.forEach(word => {
+    const cleanWord = word.replace(/[^a-z0-9-]/g, '');
+    if (cleanWord.length > 3 && !stopwords.has(cleanWord) && !/^\d+$/.test(cleanWord)) {
+      counts[cleanWord] = (counts[cleanWord] || 0) + 1;
+    }
+  });
+  
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(entry => `${entry[0]} (${entry[1]})`);
+}
+
+export function computeSimpleDiff(oldText: string, newText: string): string {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+  let html = '<div class="font-mono text-[10px] leading-relaxed bg-slate-950 rounded-lg overflow-x-auto border border-slate-900 p-3">';
+  const maxLen = Math.max(oldLines.length, newLines.length);
+  for (let i = 0; i < maxLen; i++) {
+    const o = oldLines[i];
+    const n = newLines[i];
+    if (o === undefined) {
+      html += `<div class="px-2 py-0.5 bg-emerald-950/40 text-emerald-400 border-l-2 border-emerald-500 whitespace-pre-wrap">+ ${escapeHtml(n)}</div>`;
+    } else if (n === undefined) {
+      html += `<div class="px-2 py-0.5 bg-red-950/40 text-red-400 border-l-2 border-red-500 whitespace-pre-wrap">- ${escapeHtml(o)}</div>`;
+    } else if (o === n) {
+      html += `<div class="px-2 py-0.5 text-slate-600 whitespace-pre-wrap">  ${escapeHtml(o)}</div>`;
+    } else {
+      html += `<div class="px-2 py-0.5 bg-red-950/40 text-red-400 border-l-2 border-red-500 whitespace-pre-wrap">- ${escapeHtml(o)}</div>`;
+      html += `<div class="px-2 py-0.5 bg-emerald-950/40 text-emerald-400 border-l-2 border-emerald-500 whitespace-pre-wrap">+ ${escapeHtml(n)}</div>`;
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+export async function renderAuditLogView(container: HTMLElement) {
+  const logs = await getAllAuditLogs();
+  logs.sort((a, b) => b.timestamp - a.timestamp);
+
+  container.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl p-6 shadow-xl max-w-6xl mx-auto">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-4 mb-6">
+        <div>
+          <h2 class="text-xl font-bold font-mono text-white uppercase tracking-wider">System Audit Logs</h2>
+          <p class="text-[10px] text-slate-500 font-mono mt-1">FORENSIC MONITORING SYSTEM // ZERO TELEMETRY LOCAL AUDIT TRAIL</p>
+        </div>
+        <div class="flex gap-2">
+          <button id="clear-audit-logs-btn" class="px-3 py-1.5 bg-red-950/20 border border-red-900/30 hover:bg-red-900/30 text-red-400 hover:text-red-300 font-mono text-xs rounded transition uppercase">Clear All</button>
+          <a href="#/system" class="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 font-mono text-xs uppercase rounded transition hover:text-white">Back to Admin</a>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse font-mono text-xs">
+          <thead>
+            <tr class="border-b border-slate-800 text-slate-450 uppercase">
+              <th class="py-3 px-4">Timestamp</th>
+              <th class="py-3 px-4">Event Type</th>
+              <th class="py-3 px-4">Details</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-850/40 text-slate-300">
+            ${logs.map(log => `
+              <tr class="hover:bg-slate-900/10">
+                <td class="py-2.5 px-4 text-slate-500 whitespace-nowrap">${new Date(log.timestamp).toLocaleString()}</td>
+                <td class="py-2.5 px-4 font-bold text-teal-400 whitespace-nowrap">${escapeHtml(log.event)}</td>
+                <td class="py-2.5 px-4 text-slate-400 break-all">${escapeHtml(log.details)}</td>
+              </tr>
+            `).join('')}
+            ${logs.length === 0 ? `
+              <tr>
+                <td colspan="3" class="py-8 text-center text-slate-500">No audit events recorded.</td>
+              </tr>
+            ` : ''}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('clear-audit-logs-btn')?.addEventListener('click', async () => {
+    if (confirm('AUDIT WARNING: This will permanently delete the forensic audit trail. Continue?')) {
+      await clearAuditLogs();
+      logSecurityEvent('AUDIT_CLEAR', 'Forensic audit trail manually cleared');
+      renderLayout();
+    }
+  });
+}
+
+export function showShortcutCheatSheet() {
+  if (document.getElementById('shortcut-cheat-sheet-modal')) return;
+  const modal = document.createElement('div');
+  modal.id = 'shortcut-cheat-sheet-modal';
+  modal.className = 'fixed inset-0 bg-black/85 z-[100] flex items-center justify-center p-4';
+  modal.innerHTML = `
+    <div class="bg-slate-950 border border-slate-800 rounded-xl p-6 w-full max-w-md shadow-2xl glow-border">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+        <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider flex items-center gap-1.5">⌨️ Terminal Hotkeys</h3>
+        <button id="close-shortcuts-modal" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
+      </div>
+      <div class="space-y-3 font-mono text-xs text-slate-300">
+        <div class="flex justify-between items-center py-1 border-b border-slate-900/60">
+          <span>Ctrl + P / K</span>
+          <span class="text-teal-400">Search Command Palette</span>
+        </div>
+        <div class="flex justify-between items-center py-1 border-b border-slate-900/60">
+          <span>Ctrl + N</span>
+          <span class="text-teal-400">Create New Intel</span>
+        </div>
+        <div class="flex justify-between items-center py-1 border-b border-slate-900/60">
+          <span>Ctrl + S</span>
+          <span class="text-teal-400">Save Document (in Editor)</span>
+        </div>
+        <div class="flex justify-between items-center py-1 border-b border-slate-900/60">
+          <span>Ctrl + Shift + L</span>
+          <span class="text-teal-400">Lock Session Instantly</span>
+        </div>
+        <div class="flex justify-between items-center py-1 border-b border-slate-900/60">
+          <span>Escape (3x fast)</span>
+          <span class="text-teal-400">Emergency Session Lock</span>
+        </div>
+        <div class="flex justify-between items-center py-1 border-b border-slate-900/60">
+          <span>Shift + ?</span>
+          <span class="text-teal-400">Show Keyboard Shortcuts</span>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('#close-shortcuts-modal')?.addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+}
+
+// Bind Global Shortcuts
+window.addEventListener('keydown', (e) => {
+  if (e.key === '?' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+    e.preventDefault();
+    showShortcutCheatSheet();
+  }
+});

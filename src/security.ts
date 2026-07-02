@@ -5,6 +5,29 @@ import { WikiPage } from './db';
 // Configure marked to render links with target="_blank" and rel="noopener noreferrer" for security (tabnabbing protection)
 const renderer = new marked.Renderer();
 const originalLink = renderer.link.bind(renderer);
+// Overriding code renderer for secure offline syntax highlighting
+renderer.code = (code, lang) => {
+  const language = lang || '';
+  let html = code
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+  
+  if (language) {
+    const keywords = /\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|import|export|class|extends|new|try|catch|finally|throw|def|print|elif|in|is|not|and|or|lambda|as|with|pass|public|private|protected|static|void|int|string|boolean|select|from|where|insert|update|delete|create|table|drop|values|into|join|on|group|by|order|true|false|null|None)\b/g;
+    const strings = /(["'`])(.*?)\1/g;
+    const comments = /(\/\/.*|#.*)/g;
+
+    html = html.replace(comments, '<span class="text-slate-500">$1</span>');
+    html = html.replace(strings, '<span class="text-amber-400">$0</span>');
+    html = html.replace(keywords, '<span class="text-teal-400 font-bold">$1</span>');
+  }
+
+  return `<pre class="bg-slate-950 p-4 rounded-lg overflow-x-auto border border-slate-800/80 my-4 text-xs font-mono"><code class="language-${language}">${html}</code></pre>`;
+};
+
 renderer.link = (href, title, text) => {
   const html = originalLink(href, title, text);
   return html.replace('<a ', '<a target="_blank" rel="noopener noreferrer" class="text-teal-400 hover:underline" ');
