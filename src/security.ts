@@ -8,6 +8,59 @@ const originalLink = renderer.link.bind(renderer);
 // Overriding code renderer for secure offline syntax highlighting
 renderer.code = (code, lang) => {
   const language = lang || '';
+  if (language === 'mermaid') {
+    const lines = code.split('\n');
+    let diagramHtml = '<div class="flex flex-col items-center gap-4 bg-slate-950 p-6 rounded-lg border border-slate-800/80 my-4 select-none">';
+    const nodes = new Map<string, string>();
+    const edges: { from: string; to: string; label?: string }[] = [];
+    
+    lines.forEach(line => {
+      const cleanLine = line.trim();
+      if (!cleanLine) return;
+      const nodeDefMatch = cleanLine.match(/^([A-Za-z0-9_-]+)\[(.*?)\]$/);
+      if (nodeDefMatch) {
+        nodes.set(nodeDefMatch[1], nodeDefMatch[2]);
+        return;
+      }
+      const edgeMatch = cleanLine.match(/^([A-Za-z0-9_-]+)\s*-->\s*(?:\|(.*?)\|)?\s*([A-Za-z0-9_-]+)$/);
+      if (edgeMatch) {
+        const from = edgeMatch[1];
+        const label = edgeMatch[2] || '';
+        const to = edgeMatch[3];
+        edges.push({ from, to, label });
+        if (!nodes.has(from)) nodes.set(from, from);
+        if (!nodes.has(to)) nodes.set(to, to);
+      }
+    });
+
+    if (nodes.size > 0) {
+      diagramHtml += '<div class="space-y-4 w-full flex flex-col items-center">';
+      const childNodes = new Set(edges.map(e => e.to));
+      const roots = Array.from(nodes.keys()).filter(id => !childNodes.has(id));
+      const children = Array.from(nodes.keys()).filter(id => childNodes.has(id));
+      
+      const renderNodeBlock = (id: string) => {
+        const label = nodes.get(id) || id;
+        return `<div class="px-4 py-2 bg-teal-950/40 text-teal-400 border border-teal-800 rounded font-mono text-xs shadow-[0_0_10px_rgba(20,184,166,0.15)]">${escapeHtml(label)}</div>`;
+      };
+
+      if (roots.length > 0) {
+        diagramHtml += '<div class="flex flex-wrap gap-4 justify-center">';
+        diagramHtml += roots.map(renderNodeBlock).join('');
+        diagramHtml += '</div>';
+      }
+      if (edges.length > 0) {
+        diagramHtml += '<div class="text-slate-650 text-xs">↓</div>';
+      }
+      if (children.length > 0) {
+        diagramHtml += '<div class="flex flex-wrap gap-4 justify-center">';
+        diagramHtml += children.map(renderNodeBlock).join('');
+        diagramHtml += '</div>';
+      }
+      diagramHtml += '</div></div>';
+      return diagramHtml;
+    }
+  }
   let html = code
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

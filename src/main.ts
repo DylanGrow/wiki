@@ -774,6 +774,10 @@ function lockSession() {
     
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (isDecryptionLockedOut()) {
+        alert('Lockout Alert: Too many failed attempts. Cooldown active.');
+        return;
+      }
       errDiv.classList.add('hidden');
       const pwd = pwdInput.value;
       try {
@@ -787,9 +791,13 @@ function lockSession() {
           await logSecurityEvent('SESSION_RESTORE', 'Restored session via master passphrase.');
         } else {
           errDiv.classList.remove('hidden');
+          handleFailedUnlockAttempt();
+          renderLayout();
         }
       } catch {
         errDiv.classList.remove('hidden');
+        handleFailedUnlockAttempt();
+        renderLayout();
       }
     });
     
@@ -1872,6 +1880,10 @@ async function renderPageView(container: HTMLElement) {
               ${integrityBadgeHtml}
               <span class="h-3 w-px bg-slate-800"></span>
               ${page.tags.map(tag => renderTagBadge(tag)).join('')}
+              ${page.expiresAt ? `
+                <span class="h-3 w-px bg-slate-800"></span>
+                <span id="page-expiry-countdown" class="text-xs font-mono text-red-400 font-bold uppercase tracking-wider animate-pulse">SELF-DESTRUCT: CALCULATING...</span>
+              ` : ''}
             </div>
             ${(() => {
               const keywords = getTopKeywords(page.content);
@@ -2402,6 +2414,33 @@ encrypted: ${!!page.isEncrypted}
   });
 
 
+  // Expiry countdown ticker
+  const countdownEl = document.getElementById('page-expiry-countdown');
+  if (countdownEl && page.expiresAt) {
+    const updateCountdown = () => {
+      const now = Date.now();
+      const diff = page.expiresAt! - now;
+      if (diff <= 0) {
+        countdownEl.textContent = 'SELF-DESTRUCT: EXPIRED';
+        renderLayout();
+      } else {
+        const hours = Math.floor(diff / (3600 * 1000));
+        const mins = Math.floor((diff % (3600 * 1000)) / (60 * 1000));
+        const secs = Math.floor((diff % (60 * 1000)) / 1000);
+        const hStr = hours > 0 ? `${hours}H ` : '';
+        const mStr = mins > 0 || hours > 0 ? `${mins}M ` : '';
+        countdownEl.textContent = `SELF-DESTRUCT: ${hStr}${mStr}${secs}S`;
+      }
+    };
+    updateCountdown();
+    const expiryInterval = setInterval(updateCountdown, 1000);
+    const cleanupCountdown = () => {
+      clearInterval(expiryInterval);
+      window.removeEventListener('hashchange', cleanupCountdown);
+    };
+    window.addEventListener('hashchange', cleanupCountdown);
+  }
+
   // Bind attachments & sandboxes
   await resolveAttachments(container);
   setupSandboxes(container);
@@ -2493,25 +2532,20 @@ async function renderEditView(container: HTMLElement) {
     }
   }
 
-  // Load Autosaved draft if it exists
+  // Load Autosaved draft alert if it exists
   const draftKey = `secops-wiki-draft-${isNewPage ? 'new' : currentPageSlug}`;
   let draftBannerHtml = '';
   const rawDraft = localStorage.getItem(draftKey);
   if (rawDraft) {
     try {
       const draft = JSON.parse(rawDraft);
-      initialTitle = draft.title || initialTitle;
-      initialContent = draft.content || initialContent;
-      if (Array.isArray(draft.tags)) {
-        currentTagsList = draft.tags;
-      } else if (typeof draft.tags === 'string') {
-        currentTagsList = draft.tags.split(',').map((t: string) => t.trim()).filter((t: string) => t.length > 0);
-      }
-      
       draftBannerHtml = `
-        <div id="draft-restore-banner" class="bg-teal-950/40 border border-teal-800 text-teal-400 p-3 rounded-lg text-xs font-mono mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-          <span>RESTORED DRAFT: Unsaved changes restored (${new Date(draft.updatedAt).toLocaleTimeString()})</span>
-          <button type="button" id="discard-draft-btn" class="underline hover:text-teal-300 font-bold shrink-0">DISCARD</button>
+        <div id="draft-restore-banner" class="bg-amber-950/40 border border-amber-800 text-amber-400 p-3 rounded-lg text-xs font-mono mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+          <span>UNSAVED CHANGES: A local draft from ${new Date(draft.updatedAt).toLocaleTimeString()} was found.</span>
+          <div class="flex gap-2 shrink-0">
+            <button type="button" id="restore-draft-btn" class="px-2 py-1 bg-amber-600 text-slate-950 hover:bg-amber-500 rounded font-bold uppercase tracking-wider text-[10px] transition">Restore</button>
+            <button type="button" id="discard-draft-btn" class="px-2 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white rounded uppercase tracking-wider text-[10px] transition">Discard</button>
+          </div>
         </div>
       `;
     } catch {
@@ -2916,6 +2950,34 @@ async function renderEditView(container: HTMLElement) {
   });
 
   updatePreview(); // Initial render
+
+  // Bind restore / discard draft buttons
+  const restoreDraftBtn = document.getElementById('restore-draft-btn');
+  const discardDraftBtn = document.getElementById('discard-draft-btn');
+  const draftBanner = document.getElementById('draft-restore-banner');
+  if (rawDraft && restoreDraftBtn && discardDraftBtn) {
+    try {
+      const draft = JSON.parse(rawDraft);
+      restoreDraftBtn.addEventListener('click', () => {
+        const titleInput = document.getElementById('edit-title') as HTMLInputElement;
+        const contentTextarea = document.getElementById('edit-content') as HTMLTextAreaElement;
+        if (titleInput) titleInput.value = draft.title || '';
+        if (contentTextarea) {
+          contentTextarea.value = draft.content || '';
+          updatePreview();
+        }
+        if (Array.isArray(draft.tags)) {
+          currentTagsList = draft.tags;
+          renderTagPills();
+        }
+        draftBanner?.remove();
+      });
+      discardDraftBtn.addEventListener('click', () => {
+        localStorage.removeItem(draftKey);
+        draftBanner?.remove();
+      });
+    } catch {}
+  }
 
 
   // Tag pill manager logic
@@ -4216,6 +4278,7 @@ function renderSystemView(container: HTMLElement) {
               <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Select system behavior when importing existing page slugs.</p>
             </div>
             <select id="import-conflict-resolution" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition focus:outline-none focus:border-teal-500 text-center cursor-pointer">
+              <option value="ASK" selected>PROMPT / COMPARE</option>
               <option value="REVISION">ARCHIVE OLD AS REV</option>
               <option value="OVERWRITE">DIRECT OVERWRITE</option>
               <option value="SKIP">SKIP DUPLICATE</option>
@@ -4259,6 +4322,17 @@ function renderSystemView(container: HTMLElement) {
             </div>
             <button id="system-cache-bust-btn" class="w-full py-2 bg-amber-950/20 border border-amber-900/30 hover:bg-amber-900/30 text-amber-400 hover:text-amber-300 font-mono text-xs uppercase rounded transition">
               Bust Cache
+            </button>
+          </div>
+
+          <!-- Compact Revisions -->
+          <div class="bg-slate-950/40 border border-slate-800 p-4 rounded-lg flex flex-col justify-between">
+            <div>
+              <h4 class="text-xs font-bold font-mono text-white uppercase">Compact Page Revisions</h4>
+              <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Merge multiple minor page revisions, leaving only the latest revision per page to optimize IndexedDB storage.</p>
+            </div>
+            <button id="system-compact-btn" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-350 font-mono text-xs uppercase rounded transition hover:text-white">
+              Compact Logs
             </button>
           </div>
 
@@ -4324,6 +4398,28 @@ function renderSystemView(container: HTMLElement) {
   const dropZone = document.getElementById('system-drop-zone')!;
 
   statsLabel.textContent = wikiPagesList.length.toString();
+
+  const compactBtn = document.getElementById('system-compact-btn');
+  if (compactBtn) {
+    compactBtn.addEventListener('click', async () => {
+      if (confirm('STORAGE OPTIMIZATION: This will delete older historical revisions, keeping only the single most recent revision for each page. Proceed?')) {
+        let count = 0;
+        const allPages = await getAllPagesSecure();
+        for (const page of allPages) {
+          const revisions = await getPageRevisionsSecure(page.slug);
+          if (revisions.length > 1) {
+            for (let i = 1; i < revisions.length; i++) {
+              await deleteRevision(revisions[i].id);
+              count++;
+            }
+          }
+        }
+        await logSecurityEvent('REVISION_COMPACT', `Compacted revision history, purged ${count} historical entries.`);
+        alert(`Revision compaction complete. Purged ${count} older revision logs.`);
+        renderLayout();
+      }
+    });
+  }
 
   if (diagnosticsContainer) {
     runDatabaseDiagnostics(diagnosticsContainer);
@@ -4602,7 +4698,7 @@ encrypted: ${!!page.isEncrypted}
     dbEncryptCheckbox.addEventListener('change', async () => {
       const checked = dbEncryptCheckbox.checked;
       if (checked) {
-        const passphrase = prompt('Enter a new Master Passphrase to secure the database (min 8 chars, mixed case, numbers, symbols):');
+        const passphrase = await showPassphraseModal('activate');
         if (!passphrase) {
           dbEncryptCheckbox.checked = false;
           return;
@@ -4634,7 +4730,7 @@ encrypted: ${!!page.isEncrypted}
           dbEncryptCheckbox.checked = false;
         }
       } else {
-        const passphrase = prompt('Enter the current Master Passphrase to confirm decryption:');
+        const passphrase = await showPassphraseModal('deactivate');
         if (!passphrase) {
           dbEncryptCheckbox.checked = true;
           return;
@@ -4960,16 +5056,21 @@ function renderPaletteResults() {
   matchingPages.forEach((item) => {
     const isActive = indexCounter === activeCommandIndex;
     const page = item.page;
+    const decPage = decryptedSearchIndex.find(dp => dp.slug === page.slug) || page;
+    const snippet = query ? getSearchSnippet(decPage.content, query) : '';
+    const snippetHtml = snippet ? `<div class="text-[9px] text-teal-400/80 font-mono mt-0.5 max-w-md truncate">${escapeHtml(snippet)}</div>` : '';
+    
     itemsHTML += `
       <div class="command-palette-item p-3 rounded-lg flex items-center justify-between cursor-pointer font-mono text-xs transition-all ${isActive ? 'command-item-active bg-teal-950/20 text-teal-400 border-l-2 border-teal-500' : 'text-slate-400 hover:bg-slate-900/40 hover:text-slate-200'}" data-index="${indexCounter}">
-        <div class="flex items-center gap-3">
-          <span class="text-base">${page.isEncrypted ? '🔒' : '📄'}</span>
-          <div>
-            <div class="font-bold text-white">${escapeHtml(page.title)}</div>
-            <div class="text-[10px] text-slate-500">Slug: ${escapeHtml(page.slug)} ${page.tags.length ? `• tags: #${page.tags.map(t => escapeHtml(t)).join(', #')}` : ''}</div>
+        <div class="flex items-center gap-3 min-w-0">
+          <span class="text-base shrink-0">${page.isEncrypted ? '🔒' : '📄'}</span>
+          <div class="min-w-0">
+            <div class="font-bold text-white truncate">${escapeHtml(page.title)}</div>
+            <div class="text-[10px] text-slate-500 truncate">Slug: ${escapeHtml(page.slug)} ${page.tags.length ? `• tags: #${page.tags.map(t => escapeHtml(t)).join(', #')}` : ''}</div>
+            ${snippetHtml}
           </div>
         </div>
-        <span class="text-[10px] text-slate-650 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-900 uppercase">PAGE</span>
+        <span class="text-[10px] text-slate-650 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-900 uppercase shrink-0">PAGE</span>
       </div>
     `;
     indexCounter++;
@@ -5517,6 +5618,9 @@ async function renderGraphView(container: HTMLElement) {
     mouseY = canvasMouse.y;
 
     if (dragNode) {
+      if (Math.abs(e.clientX - startDragX) > 4 || Math.abs(e.clientY - startDragY) > 4) {
+        hasDraggedNode = true;
+      }
       dragNode.x = mouseX;
       dragNode.y = mouseY;
       dragNode.vx = 0;
@@ -5541,6 +5645,10 @@ async function renderGraphView(container: HTMLElement) {
     }
   });
 
+  let hasDraggedNode = false;
+  let startDragX = 0;
+  let startDragY = 0;
+
   canvas.addEventListener('mousedown', (e) => {
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
@@ -5548,6 +5656,9 @@ async function renderGraphView(container: HTMLElement) {
 
     if (hoverNode) {
       dragNode = hoverNode;
+      hasDraggedNode = false;
+      startDragX = e.clientX;
+      startDragY = e.clientY;
       const canvasMouse = screenToCanvas(sx, sy);
       dragNode.x = canvasMouse.x;
       dragNode.y = canvasMouse.y;
@@ -5579,7 +5690,7 @@ async function renderGraphView(container: HTMLElement) {
   window.addEventListener('mouseup', handleMouseUp);
 
   canvas.addEventListener('click', () => {
-    if (hoverNode && !isPanning) {
+    if (hoverNode && !hasDraggedNode && !isPanning) {
       cancelAnimationFrame(animationId);
       window.location.hash = `#/page/${hoverNode.id}`;
     }
@@ -6985,3 +7096,169 @@ window.addEventListener('keydown', (e) => {
     showShortcutCheatSheet();
   }
 });
+
+// Full-Text Search Snippet Generator
+function getSearchSnippet(content: string, query: string): string {
+  const idx = content.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return '';
+  const start = Math.max(0, idx - 30);
+  const end = Math.min(content.length, idx + query.length + 40);
+  let snippet = content.substring(start, end);
+  if (start > 0) snippet = '...' + snippet;
+  if (end < content.length) snippet = snippet + '...';
+  return snippet;
+}
+
+// Decryption failure cooldown lockout tracking
+let failedUnlockAttempts = 0;
+function handleFailedUnlockAttempt() {
+  failedUnlockAttempts++;
+  if (failedUnlockAttempts >= 3) {
+    failedUnlockAttempts = 0;
+    setDecryptLockoutTime(Date.now() + 30 * 1000);
+    logSecurityEvent('SECURITY_LOCKOUT', 'Too many failed decryption attempts. Cooldown enforced.');
+  }
+}
+
+// Phase 11 Passphrase strength validation and Modal derivation
+export function calculateEntropyStrength(pwd: string): { score: number, feedback: string[] } {
+  const feedback: string[] = [];
+  if (!pwd) return { score: 0, feedback: ['Enter password'] };
+  
+  let score = 0;
+  
+  if (pwd.length >= 8) score += 20;
+  if (pwd.length >= 12) score += 15;
+  if (pwd.length >= 16) score += 15;
+  
+  const hasLower = /[a-z]/.test(pwd);
+  const hasUpper = /[A-Z]/.test(pwd);
+  const hasDigit = /[0-9]/.test(pwd);
+  const hasSpecial = /[^A-Za-z0-9]/.test(pwd);
+  
+  if (hasLower) score += 10;
+  else feedback.push('Add lowercase letters');
+  
+  if (hasUpper) score += 15;
+  else feedback.push('Add uppercase letters');
+  
+  if (hasDigit) score += 10;
+  else feedback.push('Add numbers');
+  
+  if (hasSpecial) score += 15;
+  else feedback.push('Add special characters');
+  
+  if (pwd.length < 8) {
+    feedback.push('Must be at least 8 characters long');
+    score = Math.min(15, score);
+  }
+  
+  return { score: Math.min(100, score), feedback };
+}
+
+export function showPassphraseModal(mode: 'activate' | 'deactivate'): Promise<string | null> {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-[100] flex items-center justify-center p-4';
+    
+    const isActivate = mode === 'activate';
+    const title = isActivate ? 'Derive Master Security Key' : 'Deactivate Database Encryption';
+    const subtitle = isActivate 
+      ? 'Establish a master password. This will be used to derive a strong AES-256 session key.' 
+      : 'Verify your master password to decrypt all records stored at rest.';
+
+    modal.innerHTML = `
+      <div class="glass-panel border border-teal-900/30 rounded-xl w-full max-w-md p-6 space-y-6 glow-border shadow-2xl">
+        <div class="space-y-2 text-center">
+          <h3 class="text-lg font-bold font-mono text-white uppercase tracking-wider">${title}</h3>
+          <p class="text-[10px] text-slate-500 font-mono">${subtitle}</p>
+        </div>
+        
+        <form id="passphrase-modal-form" class="space-y-4">
+          <div>
+            <input type="password" id="passphrase-modal-input" placeholder="ENTER PASSPHRASE..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none transition font-mono text-center">
+            
+            ${isActivate ? `
+              <!-- Passphrase strength indicator -->
+              <div class="mt-3 space-y-2">
+                <div class="flex justify-between items-center text-[9px] font-mono">
+                  <span class="text-slate-505 text-slate-500">STRENGTH:</span>
+                  <span id="passphrase-strength-label" class="text-red-400 font-bold">WEAK (0%)</span>
+                </div>
+                <div class="w-full h-1 bg-slate-900 rounded-full overflow-hidden">
+                  <div id="passphrase-strength-bar" class="w-0 h-full bg-red-500 transition-all duration-300"></div>
+                </div>
+                <div id="passphrase-suggestions" class="text-[9px] font-mono text-slate-500 leading-relaxed list-disc pl-3 space-y-0.5"></div>
+              </div>
+            ` : ''}
+          </div>
+          
+          <div class="flex gap-3 justify-end pt-2">
+            <button type="button" id="passphrase-modal-cancel" class="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 hover:text-white font-mono text-xs uppercase rounded transition">
+              Cancel
+            </button>
+            <button type="submit" id="passphrase-modal-submit" class="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-slate-950 hover:text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.15)]">
+              Confirm
+            </button>
+          </div>
+        </form>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    
+    const input = modal.querySelector('#passphrase-modal-input') as HTMLInputElement;
+    const form = modal.querySelector('#passphrase-modal-form') as HTMLFormElement;
+    const cancelBtn = modal.querySelector('#passphrase-modal-cancel')!;
+    
+    setTimeout(() => input.focus(), 50);
+
+    if (isActivate) {
+      const label = modal.querySelector('#passphrase-strength-label') as HTMLSpanElement;
+      const bar = modal.querySelector('#passphrase-strength-bar') as HTMLDivElement;
+      const suggestions = modal.querySelector('#passphrase-suggestions') as HTMLDivElement;
+
+      input.addEventListener('input', () => {
+        const val = input.value;
+        const res = calculateEntropyStrength(val);
+        
+        let colorClass = 'bg-red-500';
+        let textClass = 'text-red-400';
+        let labelText = 'WEAK';
+
+        if (res.score >= 80) {
+          colorClass = 'bg-emerald-500';
+          textClass = 'text-emerald-400';
+          labelText = 'EXCELLENT';
+        } else if (res.score >= 50) {
+          colorClass = 'bg-amber-500';
+          textClass = 'text-amber-400';
+          labelText = 'GOOD';
+        } else if (res.score >= 25) {
+          colorClass = 'bg-yellow-500';
+          textClass = 'text-yellow-400';
+          labelText = 'FAIR';
+        }
+
+        bar.className = `h-full ${colorClass} transition-all duration-300`;
+        bar.style.width = `${res.score}%`;
+        label.className = `${textClass} font-bold`;
+        label.textContent = `${labelText} (${res.score}%)`;
+
+        suggestions.innerHTML = res.feedback.map(f => `<div>• ${escapeHtml(f)}</div>`).join('');
+      });
+    }
+
+    cancelBtn.addEventListener('click', () => {
+      modal.remove();
+      resolve(null);
+    });
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const val = input.value;
+      modal.remove();
+      resolve(val);
+    });
+  });
+}
