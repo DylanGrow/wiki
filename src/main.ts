@@ -1407,6 +1407,11 @@ async function renderLayout() {
   const panicBtn = document.getElementById('system-panic-btn');
   if (panicBtn) {
     panicBtn.addEventListener('click', async () => {
+      const verified = await requestVerificationChallenge('EXECUTE SYSTEM PANIC PURGE');
+      if (!verified) {
+        alert('Verification Failed: Consent signature rejected.');
+        return;
+      }
       if (confirm('CRITICAL SYSTEM COMPROMISE PROTOCOL: Purge entire local database, clear all service worker caches, unregister service workers, and force self-destruct reload immediately?')) {
         // Delete DB
         indexedDB.deleteDatabase('secops-wiki-db');
@@ -1821,7 +1826,8 @@ async function renderPageView(container: HTMLElement) {
       integrityBadgeHtml = `<span class="px-2 py-0.5 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 rounded text-[9px] font-mono font-bold">✓ INTEGRITY OK</span>`;
     }
   } else {
-    integrityBadgeHtml = `<span class="px-2 py-0.5 bg-amber-950/40 text-amber-400 border border-amber-900/30 rounded text-[9px] font-mono font-bold">⚠️ UNSIGNED</span>`;
+    integrityBadgeHtml = `<span class="px-2 py-0.5 bg-amber-950/40 text-amber-400 border border-amber-900/30 rounded text-[9px] font-mono font-bold">⚠️ UNSIGNED</span>
+                          <button id="sign-page-btn" class="ml-1.5 px-2 py-0.5 bg-amber-950/50 hover:bg-amber-900/40 text-amber-400 hover:text-white border border-amber-900/30 hover:border-amber-700 rounded text-[9px] font-mono font-bold uppercase transition">Sign Intel</button>`;
   }
 
   // Toggle body print layout class
@@ -2281,6 +2287,26 @@ encrypted: ${!!page.isEncrypted}
       });
     }
     
+    // Bind Sign Intel Button
+    const signBtn = document.getElementById('sign-page-btn');
+    if (signBtn) {
+      signBtn.addEventListener('click', async () => {
+        const choice = confirm(`SIGNING NOTICE: Generate a cryptographic integrity signature for "${page.title}" and save it?`);
+        if (!choice) return;
+        try {
+          const sig = await computePageSignature(page);
+          const updatedPage = { ...page, signature: sig };
+          await savePageSecure(updatedPage);
+          await logSecurityEvent('PAGE_SIGNED', `Cryptographically signed document: ${page.slug}`);
+          alert('✓ SIGNATURE COMMITTED: Cryptographic integrity signature saved to database.');
+          await refreshPagesList();
+          await renderLayout();
+        } catch (err: any) {
+          alert('Signing failed: ' + err.message);
+        }
+      });
+    }
+
     // Bind Reconcile Integrity Button
     const reconcileBtn = document.getElementById('reconcile-integrity-btn');
     if (reconcileBtn) {
@@ -2443,6 +2469,9 @@ encrypted: ${!!page.isEncrypted}
 
   // Bind attachments & sandboxes
   await resolveAttachments(container);
+
+  // Enhance markdown tables with sorting, filtering, calculations
+  enhanceMarkdownTables(container);
   setupSandboxes(container);
 
   // 7. Syntax Highlighting via Prism.js (if loaded from CDN/index.html)
@@ -2469,21 +2498,30 @@ encrypted: ${!!page.isEncrypted}
 
   // 5. Related Pages Panel (render after main content)
   const relatedContainer = document.getElementById('related-pages-panel');
-  if (relatedContainer && page.tags.length > 0) {
-    const relatedPages = wikiPagesList
-      .filter(p => p.slug !== page.slug && p.tags.some(t => page.tags.includes(t)))
-      .slice(0, 5);
-    if (relatedPages.length > 0) {
+  if (relatedContainer) {
+    let related = getTFIDFSimilarPages(page, 5);
+    if (related.length === 0 && page.tags.length > 0) {
+      const tagMatches = wikiPagesList
+        .filter(p => p.slug !== page.slug && p.tags.some(t => page.tags.includes(t)))
+        .slice(0, 5)
+        .map(p => ({ page: p, score: 0 }));
+      related = tagMatches;
+    }
+    if (related.length > 0) {
       relatedContainer.innerHTML = `
         <div class="border-t border-slate-800 mt-8 pt-6">
-          <p class="text-xs font-bold font-mono text-slate-400 uppercase tracking-widest mb-3">Related Intel</p>
+          <p class="text-xs font-bold font-mono text-slate-400 uppercase tracking-widest mb-3">Related Intel (Content Similarity)</p>
           <div class="flex flex-wrap gap-2">
-            ${relatedPages.map(rp => `
-              <a href="#/page/${rp.slug}" class="px-3 py-1.5 bg-slate-900/60 border border-slate-800 hover:border-teal-500/50 hover:text-teal-400 text-slate-400 font-mono text-xs rounded-lg transition flex items-center gap-1.5">
-                <span class="text-[9px]">${rp.isEncrypted ? '🔒' : '⊙'}</span>
-                ${escapeHtml(rp.title)}
-              </a>
-            `).join('')}
+            ${related.map(item => {
+              const rp = item.page;
+              const matchPercent = item.score > 0 ? ` (${Math.round(Math.min(100, item.score * 100))}% MATCH)` : '';
+              return `
+                <a href="#/page/${rp.slug}" class="px-3 py-1.5 bg-slate-900/60 border border-slate-800 hover:border-teal-500/50 hover:text-teal-400 text-slate-400 font-mono text-xs rounded-lg transition flex items-center gap-1.5">
+                  <span class="text-[9px]">${rp.isEncrypted ? '🔒' : '⊙'}</span>
+                  ${escapeHtml(rp.title)}${matchPercent}
+                </a>
+              `;
+            }).join('')}
           </div>
         </div>
       `;
@@ -4106,7 +4144,7 @@ function renderSystemView(container: HTMLElement) {
       </div>
 
       <!-- System Diagnostic Panel -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <!-- Security Configurations -->
         <div class="glass-panel border border-slate-800 rounded-xl p-5 space-y-4">
           <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider border-b border-slate-800 pb-2">Active Security Parameters</h3>
@@ -4170,6 +4208,18 @@ function renderSystemView(container: HTMLElement) {
               </select>
             </li>
           </ul>
+        </div>
+
+        <!-- Resource Telemetry Chart -->
+        <div class="glass-panel border border-slate-800 rounded-xl p-5 space-y-4">
+          <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider border-b border-slate-800 pb-2">Resource Utilization</h3>
+          <div class="flex flex-col items-center justify-center bg-slate-950/60 p-2 border border-slate-850 rounded-lg">
+            <canvas id="system-telemetry-canvas" class="max-w-full"></canvas>
+          </div>
+          <div class="flex justify-between text-[10px] font-mono text-slate-500 pt-1">
+            <span>STORAGE USAGE: <span id="storage-usage-telemetry" class="text-teal-400 font-bold">Calculating...</span></span>
+            <span>QUOTA LIMIT: <span id="storage-quota-telemetry" class="text-slate-400">Calculating...</span></span>
+          </div>
         </div>
 
         <!-- Database Telemetry -->
@@ -4399,6 +4449,55 @@ function renderSystemView(container: HTMLElement) {
 
   statsLabel.textContent = wikiPagesList.length.toString();
 
+  // Update tag and word count stats telemetry
+  const tagsTelemetry = document.getElementById('total-tags-telemetry');
+  const wordsTelemetry = document.getElementById('total-words-telemetry');
+  if (tagsTelemetry) {
+    const uniqueTags = new Set(wikiPagesList.flatMap(p => p.tags));
+    tagsTelemetry.textContent = uniqueTags.size.toString();
+  }
+  if (wordsTelemetry) {
+    const totalWords = wikiPagesList.reduce((acc, p) => acc + p.content.split(/\s+/).filter(w => w.length > 0).length, 0);
+    wordsTelemetry.textContent = totalWords.toLocaleString();
+  }
+
+  // Storage and Telemetry Canvas binding
+  const telemetryCanvas = document.getElementById('system-telemetry-canvas') as HTMLCanvasElement;
+  const storageUsageText = document.getElementById('storage-usage-telemetry');
+  const storageQuotaText = document.getElementById('storage-quota-telemetry');
+  
+  if (navigator.storage && navigator.storage.estimate) {
+    navigator.storage.estimate().then(estimate => {
+      const usage = estimate.usage || 0;
+      const quota = estimate.quota || 1;
+      if (storageUsageText) {
+        storageUsageText.textContent = usage < 1024 
+          ? `${usage} B` 
+          : usage < 1024 * 1024 
+            ? `${(usage / 1024).toFixed(1)} KB` 
+            : `${(usage / (1024 * 1024)).toFixed(1)} MB`;
+      }
+      if (storageQuotaText) {
+        storageQuotaText.textContent = quota < 1024 * 1024 * 1024 
+          ? `${(quota / (1024 * 1024)).toFixed(0)} MB` 
+          : `${(quota / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+      }
+      if (telemetryCanvas) {
+        getAllAuditLogs().then(logs => {
+          drawTelemetryChart(telemetryCanvas, logs, usage, quota);
+        });
+      }
+    });
+  } else {
+    if (storageUsageText) storageUsageText.textContent = 'N/A';
+    if (storageQuotaText) storageQuotaText.textContent = 'N/A';
+    if (telemetryCanvas) {
+      getAllAuditLogs().then(logs => {
+        drawTelemetryChart(telemetryCanvas, logs, 0, 1);
+      });
+    }
+  }
+
   const compactBtn = document.getElementById('system-compact-btn');
   if (compactBtn) {
     compactBtn.addEventListener('click', async () => {
@@ -4619,6 +4718,11 @@ encrypted: ${!!page.isEncrypted}
 
   // Hard reset database handler
   resetBtn.addEventListener('click', async () => {
+    const verified = await requestVerificationChallenge('HARD WIPING DATABASE AND ALL DOCUMENTS');
+    if (!verified) {
+      alert('Verification Failed: Consent signature rejected.');
+      return;
+    }
     const confirmation = prompt('CRITICAL SECURITY WARNING: Type "WIPE" to verify you want to delete ALL wiki pages and custom documents:');
     if (confirmation === 'WIPE') {
       try {
@@ -4813,6 +4917,11 @@ encrypted: ${!!page.isEncrypted}
   const clearAuditBtn = document.getElementById('system-wipe-audit-btn');
   if (clearAuditBtn) {
     clearAuditBtn.addEventListener('click', async () => {
+      const verified = await requestVerificationChallenge('PURGING AUDIT LOG REGISTERS');
+      if (!verified) {
+        alert('Verification Failed: Consent signature rejected.');
+        return;
+      }
       if (confirm('CRITICAL ACTION: Are you sure you want to purge the security audit log registers?')) {
         await clearAuditLogs();
         await logSecurityEvent('AUDIT_LOG_CLEARED', 'Security audit log register cleared.');
@@ -6029,6 +6138,11 @@ function showMasterUnlockScreen() {
   });
 
   wipeBtn.addEventListener('click', async () => {
+    const verified = await requestVerificationChallenge('WIPING THE ENTIRE DATABASE');
+    if (!verified) {
+      alert('Verification Failed: Consent signature rejected.');
+      return;
+    }
     if (confirm('CRITICAL ACTION: Are you sure you want to completely wipe this database? All encrypted records and system procedures will be permanently deleted.')) {
       const verify = prompt('Type "WIPE" to confirm sanitization:');
       if (verify === 'WIPE') {
@@ -7261,4 +7375,360 @@ export function showPassphraseModal(mode: 'activate' | 'deactivate'): Promise<st
       resolve(val);
     });
   });
+}
+
+// Phase 12 Helpers: Verification challenge, Telemetry chart, Interactive tables, TF-IDF analyzer
+async function requestVerificationChallenge(reason: string): Promise<boolean> {
+  const hasBioGate = localStorage.getItem('secops-wiki-webauthn-gate') === 'true';
+  if (hasBioGate) {
+    try {
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge,
+          rpId: window.location.hostname || "localhost",
+          userVerification: "required",
+          timeout: 10000
+        }
+      });
+      if (assertion) return true;
+    } catch (e: any) {
+      console.warn('Biometric consent failed: ' + e.message);
+    }
+  }
+
+  const isDbEncrypted = localStorage.getItem('secops-wiki-db-encrypted') === 'true';
+  if (isDbEncrypted) {
+    const pwd = prompt(`CRITICAL ACTION REQUESTED: ${reason.toUpperCase()}\n\nEnter your master passphrase to confirm this action:`);
+    if (!pwd) return false;
+    try {
+      const derivedKey = await deriveKey(pwd);
+      const isCorrect = await verifyMasterKey(derivedKey);
+      return isCorrect;
+    } catch {
+      return false;
+    }
+  }
+  
+  return confirm(`CONFIRM CRITICAL ACTION: ${reason}`);
+}
+
+function drawTelemetryChart(canvas: HTMLCanvasElement, logs: AuditLog[], usage: number, quota: number) {
+  const ctx = canvas.getContext('2d')!;
+  const dpr = window.devicePixelRatio || 1;
+  const w = 400;
+  const h = 180;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  ctx.scale(dpr, dpr);
+
+  ctx.fillStyle = '#060814';
+  ctx.fillRect(0, 0, w, h);
+
+  const dailyCounts = new Array(7).fill(0);
+  const dayNames = new Array(7);
+  const now = new Date();
+
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(now.getDate() - i);
+    dayNames[6 - i] = d.toLocaleDateString(undefined, { weekday: 'short' }).toUpperCase();
+    
+    const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
+    
+    dailyCounts[6 - i] = logs.filter(l => l.timestamp >= startOfDay && l.timestamp < endOfDay).length;
+  }
+
+  const paddingLeft = 40;
+  const paddingRight = 20;
+  const paddingTop = 30;
+  const paddingBottom = 30;
+  const graphWidth = w - paddingLeft - paddingRight;
+  const graphHeight = h - paddingTop - paddingBottom;
+
+  const maxVal = Math.max(...dailyCounts, 5);
+
+  ctx.strokeStyle = '#1e293b';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = paddingTop + (graphHeight / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(paddingLeft, y);
+    ctx.lineTo(w - paddingRight, y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#64748b';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(Math.round(maxVal - (maxVal / 4) * i).toString(), paddingLeft - 8, y + 3);
+  }
+
+  ctx.beginPath();
+  const getX = (idx: number) => paddingLeft + (graphWidth / 6) * idx;
+  const getY = (val: number) => paddingTop + graphHeight - (val / maxVal) * graphHeight;
+
+  if (logs.length > 0) {
+    dailyCounts.forEach((count, idx) => {
+      const x = getX(idx);
+      const y = getY(count);
+      if (idx === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+  }
+
+  const gradient = ctx.createLinearGradient(0, 0, w, 0);
+  gradient.addColorStop(0, '#2dd4bf');
+  gradient.addColorStop(1, '#60a5fa');
+  ctx.strokeStyle = gradient;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  if (logs.length > 0) {
+    ctx.lineTo(getX(6), getY(0));
+    ctx.lineTo(getX(0), getY(0));
+    ctx.closePath();
+    const fillGradient = ctx.createLinearGradient(0, paddingTop, 0, paddingTop + graphHeight);
+    fillGradient.addColorStop(0, 'rgba(45, 212, 191, 0.15)');
+    fillGradient.addColorStop(1, 'rgba(6, 8, 20, 0)');
+    ctx.fillStyle = fillGradient;
+    ctx.fill();
+  }
+
+  dailyCounts.forEach((count, idx) => {
+    const x = getX(idx);
+    const y = getY(count);
+
+    ctx.fillStyle = '#2dd4bf';
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, 2 * Math.PI);
+    ctx.fill();
+
+    ctx.fillStyle = '#64748b';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(dayNames[idx], x, h - 10);
+  });
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = 'bold 9px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('AUDIT TELEMETRY (LOGS FREQUENCY)', paddingLeft, 15);
+
+  ctx.fillStyle = '#64748b';
+  ctx.font = '8px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`DB: ${(usage / (1024 * 1024)).toFixed(1)}MB / ${(quota / (1024 * 1024 * 1024)).toFixed(1)}GB`, w - paddingRight, 15);
+}
+
+function getTFIDFSimilarPages(currentPage: WikiPage, limit = 5): { page: WikiPage; score: number }[] {
+  const allPages = wikiPagesList;
+  if (allPages.length <= 1) return [];
+
+  const stopWords = new Set(['the', 'a', 'and', 'or', 'in', 'on', 'of', 'to', 'is', 'for', 'with', 'that', 'this', 'at', 'by', 'from', 'it', 'an', 'as', 'are', 'was', 'were', 'be', 'been', 'which', 'has', 'have', 'had', 'but', 'not']);
+
+  const tokenize = (text: string): string[] => {
+    return text.toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !stopWords.has(w));
+  };
+
+  const docsTokens = allPages.map(p => ({
+    slug: p.slug,
+    tokens: tokenize(p.title + ' ' + p.content)
+  }));
+
+  const docCount = allPages.length;
+  const dfMap = new Map<string, number>();
+  docsTokens.forEach(doc => {
+    const uniqueTerms = new Set(doc.tokens);
+    uniqueTerms.forEach(term => {
+      dfMap.set(term, (dfMap.get(term) || 0) + 1);
+    });
+  });
+
+  const getTFMap = (tokens: string[]) => {
+    const tfMap = new Map<string, number>();
+    tokens.forEach(t => {
+      tfMap.set(t, (tfMap.get(t) || 0) + 1);
+    });
+    const total = tokens.length || 1;
+    const finalTf = new Map<string, number>();
+    tfMap.forEach((count, term) => {
+      finalTf.set(term, count / total);
+    });
+    return finalTf;
+  };
+
+  const currentTokens = tokenize(currentPage.title + ' ' + currentPage.content);
+  if (currentTokens.length === 0) return [];
+  const currentTF = getTFMap(currentTokens);
+
+  const similarities: { page: WikiPage; score: number }[] = [];
+
+  allPages.forEach((p, idx) => {
+    if (p.slug === currentPage.slug) return;
+
+    const docTF = getTFMap(docsTokens[idx].tokens);
+    let score = 0;
+
+    currentTF.forEach((tfA, term) => {
+      if (docTF.has(term)) {
+        const tfB = docTF.get(term)!;
+        const df = dfMap.get(term) || 1;
+        const idf = Math.log(docCount / df) + 1;
+        score += tfA * tfB * idf * idf;
+      }
+    });
+
+    if (score > 0) {
+      similarities.push({ page: p, score });
+    }
+  });
+
+  similarities.sort((a, b) => b.score - a.score);
+  return similarities.slice(0, limit);
+}
+
+function enhanceMarkdownTables(container: HTMLElement) {
+  const tables = container.querySelectorAll('.wiki-content table');
+  tables.forEach((table) => {
+    const parent = table.parentElement!;
+    if (table.classList.contains('enhanced-table')) return;
+    table.classList.add('enhanced-table', 'w-full', 'border-collapse');
+
+    const controls = document.createElement('div');
+    controls.className = 'flex items-center justify-between gap-4 p-2 bg-slate-950/60 border border-slate-800 border-b-0 rounded-t-lg select-none text-[10px] font-mono text-slate-400 mt-4';
+    controls.innerHTML = `
+      <div class="flex items-center gap-1.5">
+        <span>🔍</span>
+        <input type="text" placeholder="Filter table rows..." aria-label="Filter table rows" class="table-filter-input bg-slate-900 border border-slate-800 rounded px-2 py-0.5 text-xs text-slate-200 focus:outline-none focus:border-teal-500/50 w-48 font-mono">
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="table-calc-btn px-2 py-0.5 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-slate-400 hover:text-white uppercase transition">Toggle Calculations</button>
+      </div>
+    `;
+    parent.insertBefore(controls, table);
+
+    table.classList.add('border', 'border-slate-800', 'rounded-b-lg');
+    
+    const headers = table.querySelectorAll('th');
+    headers.forEach((th, colIdx) => {
+      th.classList.add('cursor-pointer', 'hover:bg-slate-900/50', 'transition-colors', 'select-none');
+      th.innerHTML += ' <span class="sort-indicator text-slate-600 text-[9px]">↕</span>';
+      
+      let sortAsc = true;
+      th.addEventListener('click', () => {
+        sortTable(table as HTMLTableElement, colIdx, sortAsc);
+        sortAsc = !sortAsc;
+        headers.forEach((h, idx) => {
+          const indicator = h.querySelector('.sort-indicator')!;
+          if (idx === colIdx) {
+            indicator.textContent = sortAsc ? '↓' : '↑';
+            indicator.classList.remove('text-slate-600');
+            indicator.classList.add('text-teal-400', 'font-bold');
+          } else {
+            indicator.textContent = '↕';
+            indicator.className = 'sort-indicator text-slate-600 text-[9px]';
+          }
+        });
+      });
+    });
+
+    const filterInput = controls.querySelector('.table-filter-input') as HTMLInputElement;
+    filterInput.addEventListener('input', () => {
+      const q = filterInput.value.toLowerCase();
+      const rows = table.querySelectorAll('tbody tr');
+      rows.forEach(row => {
+        const text = row.textContent?.toLowerCase() || '';
+        if (text.includes(q)) {
+          (row as HTMLElement).style.display = '';
+        } else {
+          (row as HTMLElement).style.display = 'none';
+        }
+      });
+    });
+
+    const calcBtn = controls.querySelector('.table-calc-btn')!;
+    let calcRow: HTMLTableRowElement | null = null;
+    calcBtn.addEventListener('click', () => {
+      if (calcRow) {
+        calcRow.remove();
+        calcRow = null;
+        return;
+      }
+
+      const tbody = table.querySelector('tbody')!;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      if (rows.length === 0) return;
+
+      const numCols = headers.length;
+      const colSums = new Array(numCols).fill(0);
+      const colCount = new Array(numCols).fill(0);
+      const isColNumeric = new Array(numCols).fill(true);
+
+      rows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        cells.forEach((cell, colIdx) => {
+          const valStr = cell.textContent?.trim().replace(/[\$,]/g, '') || '';
+          if (valStr === '') return;
+          const val = parseFloat(valStr);
+          if (isNaN(val)) {
+            isColNumeric[colIdx] = false;
+          } else {
+            colSums[colIdx] += val;
+            colCount[colIdx]++;
+          }
+        });
+      });
+
+      calcRow = document.createElement('tr');
+      calcRow.className = 'bg-slate-950/80 font-bold border-t border-slate-800 text-[10px] font-mono text-teal-400';
+      
+      for (let colIdx = 0; colIdx < numCols; colIdx++) {
+        const td = document.createElement('td');
+        td.className = 'p-2 text-right';
+        if (colIdx === 0) {
+          td.textContent = 'CALCULATIONS';
+          td.className = 'p-2 text-left';
+        } else if (isColNumeric[colIdx] && colCount[colIdx] > 0) {
+          const sum = colSums[colIdx];
+          const avg = sum / colCount[colIdx];
+          td.innerHTML = `<div>SUM: ${sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                          <div class="text-slate-500 font-normal">AVG: ${avg.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>`;
+        } else {
+          td.textContent = '—';
+        }
+        calcRow.appendChild(td);
+      }
+      tbody.appendChild(calcRow);
+    });
+  });
+}
+
+function sortTable(table: HTMLTableElement, colIdx: number, asc: boolean) {
+  const tbody = table.querySelector('tbody')!;
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const dataRows = rows.filter(r => !r.classList.contains('bg-slate-950/80'));
+  const calcRow = rows.find(r => r.classList.contains('bg-slate-950/80'));
+
+  dataRows.sort((a, b) => {
+    const valA = a.querySelectorAll('td')[colIdx]?.textContent?.trim() || '';
+    const valB = b.querySelectorAll('td')[colIdx]?.textContent?.trim() || '';
+    const numA = parseFloat(valA.replace(/[\$,]/g, ''));
+    const numB = parseFloat(valB.replace(/[\$,]/g, ''));
+    if (!isNaN(numA) && !isNaN(numB)) {
+      return asc ? numA - numB : numB - numA;
+    }
+    return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+  });
+
+  dataRows.forEach(row => tbody.appendChild(row));
+  if (calcRow) tbody.appendChild(calcRow);
 }
