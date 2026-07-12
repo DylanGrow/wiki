@@ -83,4 +83,30 @@ if (fs.existsSync(srcAssets)) {
   }
 }
 
+// 6. Patch hashed manifest JSON in root assets/ to fix icon paths
+//    When manifest is served from /wiki/assets/, relative "icon.svg" resolves to /wiki/assets/icon.svg (404).
+//    We rewrite to absolute /wiki/icon.svg so it always resolves correctly.
+const rootAssetsDir = path.join(rootDir, 'assets');
+if (fs.existsSync(rootAssetsDir)) {
+  const assetFiles2 = fs.readdirSync(rootAssetsDir);
+  for (const file of assetFiles2) {
+    if (file.startsWith('manifest') && file.endsWith('.json')) {
+      const manifestAssetPath = path.join(rootAssetsDir, file);
+      try {
+        const mContent = JSON.parse(fs.readFileSync(manifestAssetPath, 'utf8'));
+        if (mContent.icons) {
+          mContent.icons = mContent.icons.map(icon => ({
+            ...icon,
+            src: icon.src.replace(/^(?!\/|https?:\/\/)/, '/wiki/')
+          }));
+          fs.writeFileSync(manifestAssetPath, JSON.stringify(mContent, null, 2) + '\n', 'utf8');
+          console.log(`Patched icon paths in hashed manifest: ${file}`);
+        }
+      } catch (e) {
+        console.warn(`Warning: Could not patch manifest ${file}: ${e.message}`);
+      }
+    }
+  }
+}
+
 console.log('Post-build script finished successfully!');
