@@ -7296,13 +7296,13 @@ export function showPassphraseModal(mode: 'activate' | 'deactivate'): Promise<st
               <!-- Passphrase strength indicator -->
               <div class="mt-3 space-y-2">
                 <div class="flex justify-between items-center text-[9px] font-mono">
-                  <span class="text-slate-505 text-slate-500">STRENGTH:</span>
+                  <span class="text-slate-400">STRENGTH:</span>
                   <span id="passphrase-strength-label" class="text-red-400 font-bold">WEAK (0%)</span>
                 </div>
                 <div class="w-full h-1 bg-slate-900 rounded-full overflow-hidden">
                   <div id="passphrase-strength-bar" class="w-0 h-full bg-red-500 transition-all duration-300"></div>
                 </div>
-                <div id="passphrase-suggestions" class="text-[9px] font-mono text-slate-500 leading-relaxed list-disc pl-3 space-y-0.5"></div>
+                <div id="passphrase-suggestions" class="text-[9px] font-mono text-slate-400 leading-relaxed list-disc pl-3 space-y-0.5"></div>
               </div>
             ` : ''}
           </div>
@@ -7460,10 +7460,10 @@ function drawTelemetryChart(canvas: HTMLCanvasElement, logs: AuditLog[], usage: 
     ctx.lineTo(w - paddingRight, y);
     ctx.stroke();
 
-    ctx.fillStyle = '#64748b';
-    ctx.font = '8px monospace';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '10px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(Math.round(maxVal - (maxVal / 4) * i).toString(), paddingLeft - 8, y + 3);
+    ctx.fillText(Math.round(maxVal - (maxVal / 4) * i).toString(), paddingLeft - 8, y + 3.5);
   }
 
   ctx.beginPath();
@@ -7509,19 +7509,19 @@ function drawTelemetryChart(canvas: HTMLCanvasElement, logs: AuditLog[], usage: 
     ctx.arc(x, y, 3, 0, 2 * Math.PI);
     ctx.fill();
 
-    ctx.fillStyle = '#64748b';
-    ctx.font = '8px monospace';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '10px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(dayNames[idx], x, h - 10);
+    ctx.fillText(dayNames[idx], x, h - 8);
   });
 
   ctx.fillStyle = '#f8fafc';
-  ctx.font = 'bold 9px monospace';
+  ctx.font = 'bold 11px monospace';
   ctx.textAlign = 'left';
   ctx.fillText('AUDIT TELEMETRY (LOGS FREQUENCY)', paddingLeft, 15);
 
-  ctx.fillStyle = '#64748b';
-  ctx.font = '8px monospace';
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '10px monospace';
   ctx.textAlign = 'right';
   ctx.fillText(`DB: ${(usage / (1024 * 1024)).toFixed(1)}MB / ${(quota / (1024 * 1024 * 1024)).toFixed(1)}GB`, w - paddingRight, 15);
 }
@@ -7701,7 +7701,7 @@ function enhanceMarkdownTables(container: HTMLElement) {
           const sum = colSums[colIdx];
           const avg = sum / colCount[colIdx];
           td.innerHTML = `<div>SUM: ${sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                          <div class="text-slate-500 font-normal">AVG: ${avg.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>`;
+                          <div class="text-slate-400 font-normal">AVG: ${avg.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>`;
         } else {
           td.textContent = '—';
         }

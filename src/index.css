@@ -13,8 +13,9 @@
 
   body {
     background-color: var(--color-bg-base);
-    color: #e2e8f0;
+    color: #f8fafc;
     font-family: var(--font-sans);
+    font-size: 15px;
     overflow-x: hidden;
   }
 
@@ -129,7 +130,7 @@
   font-size: 0.95rem;
   margin-bottom: 1rem;
   line-height: 1.7;
-  color: #cbd5e1;
+  color: #f1f5f9;
 }
 @media (min-width: 768px) {
   .wiki-content p {
@@ -151,7 +152,7 @@
 
 .wiki-content li {
   margin-bottom: 0.25rem;
-  color: #cbd5e1;
+  color: #f1f5f9;
 }
 
 .wiki-content blockquote {
@@ -162,7 +163,7 @@
   margin-top: 1rem;
   margin-bottom: 1rem;
   font-style: italic;
-  color: #94a3b8;
+  color: #cbd5e1;
   background-color: rgba(13, 148, 136, 0.05);
   padding-top: 0.5rem;
   padding-bottom: 0.5rem;
