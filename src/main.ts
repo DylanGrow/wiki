@@ -749,7 +749,7 @@ function lockSession() {
         <p class="text-slate-400 text-[10px] font-mono mb-6 leading-relaxed">System locked due to inactivity.<br>Enter master passphrase or use biometrics.</p>
         
         <form id="idle-unlock-form" class="space-y-4">
-          <input type="password" id="idle-unlock-password-input" placeholder="ENTER MASTER KEY..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none transition font-mono text-center">
+          <input type="password" id="idle-unlock-password-input" aria-label="Master key passphrase" placeholder="ENTER MASTER KEY..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none transition font-mono text-center">
           <div class="flex gap-2">
             ${hasBioGate ? `
               <button type="button" id="idle-unlock-biometric-btn" class="flex-1 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-350 font-mono text-[10px] uppercase rounded transition hover:text-white flex items-center justify-center gap-1">
@@ -1349,7 +1349,7 @@ async function renderLayout() {
         <span class="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">📋 Scratchpad</span>
         <button id="floating-scratchpad-close" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
       </div>
-      <textarea id="floating-scratchpad-content" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
+      <textarea id="floating-scratchpad-content" aria-label="Scratchpad notes" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
     </div>
 
     <!-- Toggle button for Scratchpad -->
@@ -1668,7 +1668,7 @@ async function renderPageView(container: HTMLElement) {
         <h2 class="text-xl font-bold font-mono text-white mb-2 uppercase">DECRYPT_REQUIRED</h2>
         <p class="text-slate-400 text-xs font-mono mb-6">This document payload is encrypted. Enter passphrase to decrypt.</p>
         <form id="decrypt-doc-form" class="space-y-4">
-          <input type="password" id="decrypt-password-input" placeholder="Enter security passphrase..." ${isLockedOut ? 'disabled' : ''} class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base text-slate-200 focus:outline-none transition font-mono text-center disabled:opacity-40 disabled:cursor-not-allowed">
+          <input type="password" id="decrypt-password-input" aria-label="Security key passphrase" placeholder="Enter security passphrase..." ${isLockedOut ? 'disabled' : ''} class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base text-slate-200 focus:outline-none transition font-mono text-center disabled:opacity-40 disabled:cursor-not-allowed">
           <button type="submit" ${isLockedOut ? 'disabled' : ''} class="w-full py-2 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-mono text-xs uppercase rounded font-bold transition shadow-[0_0_10px_rgba(20,184,166,0.2)] disabled:opacity-40 disabled:cursor-not-allowed">
             DECRYPT IN-MEMORY
           </button>
@@ -2566,13 +2566,13 @@ async function renderEditView(container: HTMLElement) {
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <!-- Title Input -->
           <div>
-            <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Document Title</label>
+            <label for="edit-title" class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Document Title</label>
             <input type="text" id="edit-title" value="${escapeHtml(initialTitle)}" required maxlength="100" class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono">
           </div>
 
           <!-- Slug Input -->
           <div>
-            <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Index Slug ID</label>
+            <label for="edit-slug" class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Index Slug ID</label>
             <input type="text" id="edit-slug" value="${escapeHtml(initialSlug)}" ${!isNewPage ? 'disabled' : ''} required pattern="^[a-z0-9-_]+$" placeholder="e.g. operational-manual" class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono disabled:opacity-40 disabled:cursor-not-allowed">
             ${isNewPage ? '<p class="text-[10px] text-slate-500 mt-1 font-mono">Only lowercase letters, numbers, hyphens, and underscores are allowed.</p>' : ''}
           </div>
@@ -2581,7 +2581,7 @@ async function renderEditView(container: HTMLElement) {
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <!-- Security Classification dropdown select -->
           <div>
-            <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Security Classification</label>
+            <label for="edit-classification" class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Security Classification</label>
             <select id="edit-classification" class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono cursor-pointer">
               <option value="UNCLASSIFIED" ${initialClassification === 'UNCLASSIFIED' ? 'selected' : ''}>UNCLASSIFIED</option>
               <option value="CONFIDENTIAL" ${initialClassification === 'CONFIDENTIAL' ? 'selected' : ''}>CONFIDENTIAL</option>
@@ -2591,7 +2591,7 @@ async function renderEditView(container: HTMLElement) {
           </div>
           <!-- Document Expiry Timer -->
           <div>
-            <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Intel Expiry Timer (Self-Destruct)</label>
+            <label for="edit-expiry" class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Intel Expiry Timer (Self-Destruct)</label>
             <select id="edit-expiry" class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-base md:text-sm text-slate-200 focus:outline-none transition font-mono cursor-pointer">
               <option value="0" ${initialExpiryValue === 0 ? 'selected' : ''}>NEVER</option>
               <option value="60" ${initialExpiryValue === 60 ? 'selected' : ''}>1 HOUR</option>
@@ -2604,10 +2604,10 @@ async function renderEditView(container: HTMLElement) {
 
         <!-- Tags Input -->
         <div>
-          <label class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Associated Tags</label>
+          <label for="tag-pill-input" class="block text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono mb-2">Associated Tags</label>
           <div id="tag-pills-container" class="flex flex-wrap items-center gap-2 w-full bg-slate-950/80 border border-slate-800 focus-within:border-teal-500/50 rounded-lg p-2 min-h-[42px] transition font-mono">
             <!-- Dynamic pills go here -->
-            <input type="text" id="tag-pill-input" placeholder="Type tag and press Enter..." class="bg-transparent border-0 text-base md:text-sm text-slate-200 focus:outline-none flex-1 min-w-[120px] p-0.5">
+            <input type="text" id="tag-pill-input" aria-label="Associated tag input" placeholder="Type tag and press Enter..." class="bg-transparent border-0 text-base md:text-sm text-slate-200 focus:outline-none flex-1 min-w-[120px] p-0.5">
           </div>
           <div class="relative mt-1">
             <div id="tag-pill-dropdown" class="absolute left-0 top-0 w-64 bg-slate-950 border border-slate-800 rounded-lg shadow-lg hidden font-mono text-xs max-h-40 overflow-y-auto z-20"></div>
@@ -2624,7 +2624,7 @@ async function renderEditView(container: HTMLElement) {
         <!-- Content Area -->
         <div>
           <div class="flex items-center justify-between mb-2">
-            <label class="text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono">Markdown Content payload</label>
+            <label for="edit-content" class="text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono">Markdown Content payload</label>
             <span class="hidden md:inline text-[10px] text-slate-500 font-mono">Live editor preview enabled (Type [[ for page links)</span>
           </div>
           <!-- Formatting Toolbar -->
@@ -2659,7 +2659,7 @@ async function renderEditView(container: HTMLElement) {
         <!-- Encryption Option & Actions -->
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-4 border-t border-slate-800">
           <div class="flex items-center gap-2">
-            <input type="checkbox" id="edit-encrypt" ${isEncryptedInit ? 'checked' : ''} class="w-4 h-4 rounded border-slate-850 bg-slate-950 text-teal-500 focus:ring-teal-500/50 cursor-pointer">
+            <input type="checkbox" id="edit-encrypt" aria-label="Encrypt document" ${isEncryptedInit ? 'checked' : ''} class="w-4 h-4 rounded border-slate-850 bg-slate-950 text-teal-500 focus:ring-teal-500/50 cursor-pointer">
             <label for="edit-encrypt" class="text-xs font-semibold text-slate-400 uppercase tracking-widest font-mono cursor-pointer select-none">Encrypt Document (AES-GCM)</label>
           </div>
           <div class="flex gap-3 justify-end self-end sm:self-auto">
@@ -3446,7 +3446,7 @@ function generateStaticWikiZip(pages: WikiPage[]): Blob {
         <span class="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">📋 Scratchpad</span>
         <button id="floating-scratchpad-close" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
       </div>
-      <textarea id="floating-scratchpad-content" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
+      <textarea id="floating-scratchpad-content" aria-label="Scratchpad notes" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
     </div>
 
     <!-- Toggle button for Scratchpad -->
@@ -3588,7 +3588,7 @@ function generateStaticWikiZip(pages: WikiPage[]): Blob {
         <span class="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">📋 Scratchpad</span>
         <button id="floating-scratchpad-close" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
       </div>
-      <textarea id="floating-scratchpad-content" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
+      <textarea id="floating-scratchpad-content" aria-label="Scratchpad notes" placeholder="Type temporary notes here... Persisted locally." class="flex-1 bg-transparent p-3 outline-none text-xs font-mono text-slate-200 resize-none placeholder-slate-600 leading-relaxed"></textarea>
     </div>
 
     <!-- Toggle button for Scratchpad -->
@@ -4045,7 +4045,7 @@ async function renderTagColorManager() {
         <span class="text-xs font-mono text-slate-400">#${escapeHtml(tag)}</span>
         <div class="flex gap-2 items-center">
           <button class="rename-tag-btn px-2 py-1 bg-slate-900 border border-slate-700 text-xs text-blue-400 hover:text-blue-300 rounded" data-tag="${escapeHtml(tag)}">Rename</button>
-          <select class="tag-color-select bg-slate-900 border border-slate-850 text-xs font-mono text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-teal-500 cursor-pointer" data-tag="${escapeHtml(tag)}"> border border-slate-850 text-xs font-mono text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-teal-500 cursor-pointer" data-tag="${escapeHtml(tag)}">
+          <select class="tag-color-select bg-slate-900 border border-slate-850 text-xs font-mono text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-teal-500 cursor-pointer" aria-label="Select color for tag" aria-label="Select color for tag ${escapeHtml(tag)}" data-tag="${escapeHtml(tag)}">
           <option value="slate" ${activeColor === 'slate' ? 'selected' : ''}>SLATE GREY</option>
           <option value="emerald" ${activeColor === 'emerald' ? 'selected' : ''}>EMERALD GREEN</option>
           <option value="blue" ${activeColor === 'blue' ? 'selected' : ''}>BLUE TEAM</option>
@@ -4142,14 +4142,14 @@ function renderSystemView(container: HTMLElement) {
             <li class="flex justify-between items-center py-0.5">
               <span class="text-slate-500">MASK ENCRYPTED CORES:</span>
               <label class="relative inline-flex items-center cursor-pointer select-none">
-                <input type="checkbox" id="system-mask-encrypted-checkbox" class="sr-only peer" ${maskEncryptedTitles ? 'checked' : ''}>
+                <input type="checkbox" id="system-mask-encrypted-checkbox" aria-label="Mask Encrypted Cores" class="sr-only peer" ${maskEncryptedTitles ? 'checked' : ''}>
                 <div class="w-7 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-450 after:border-slate-350 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-teal-600 peer-checked:after:bg-white"></div>
               </label>
             </li>
             <li class="flex justify-between items-center py-0.5">
               <span class="text-slate-500">DATABASE ENCRYPTION:</span>
               <label class="relative inline-flex items-center cursor-pointer select-none">
-                <input type="checkbox" id="system-db-encrypted-checkbox" class="sr-only peer" ${localStorage.getItem('secops-wiki-db-encrypted') === 'true' ? 'checked' : ''}>
+                <input type="checkbox" id="system-db-encrypted-checkbox" aria-label="Database Encryption" class="sr-only peer" ${localStorage.getItem('secops-wiki-db-encrypted') === 'true' ? 'checked' : ''}>
                 <div class="w-7 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-450 after:border-slate-350 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-teal-600 peer-checked:after:bg-white"></div>
               </label>
             </li>
@@ -4161,7 +4161,7 @@ function renderSystemView(container: HTMLElement) {
             </li>
             <li class="flex justify-between items-center py-0.5">
               <span class="text-slate-500">INACTIVITY TIMEOUT:</span>
-              <select id="system-session-timeout-select" class="bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] font-mono text-slate-300 focus:outline-none focus:border-teal-500 cursor-pointer">
+              <select id="system-session-timeout-select" aria-label="Inactivity Timeout Select" class="bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] font-mono text-slate-300 focus:outline-none focus:border-teal-500 cursor-pointer">
                 <option value="5" ${parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10) === 5 ? 'selected' : ''}>5 MIN</option>
                 <option value="15" ${parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10) === 15 ? 'selected' : ''}>15 MIN</option>
                 <option value="30" ${parseInt(localStorage.getItem('secops-wiki-session-timeout') || '15', 10) === 30 ? 'selected' : ''}>30 MIN</option>
@@ -4206,7 +4206,7 @@ function renderSystemView(container: HTMLElement) {
           <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider">Data Operations & Backups</h3>
           <div class="flex items-center gap-2">
             <span class="text-[10px] font-mono text-slate-500 uppercase">Export Scope Tag:</span>
-            <select id="export-tag-filter" class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs font-mono text-slate-300 focus:outline-none focus:border-teal-500">
+            <select id="export-tag-filter" aria-label="Export scope tag filter" class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs font-mono text-slate-300 focus:outline-none focus:border-teal-500">
               <option value="ALL">ALL ARTICLES</option>
               ${allTags.map(tag => `
                 <option value="${escapeHtml(tag)}">#${escapeHtml(tag)}</option>
@@ -4277,7 +4277,7 @@ function renderSystemView(container: HTMLElement) {
               <h4 class="text-xs font-bold font-mono text-white uppercase">Conflict Resolution</h4>
               <p class="text-[10px] text-slate-500 font-mono mt-1 mb-4">Select system behavior when importing existing page slugs.</p>
             </div>
-            <select id="import-conflict-resolution" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition focus:outline-none focus:border-teal-500 text-center cursor-pointer">
+            <select id="import-conflict-resolution" aria-label="Import conflict resolution strategy" class="w-full py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded transition focus:outline-none focus:border-teal-500 text-center cursor-pointer">
               <option value="ASK" selected>PROMPT / COMPARE</option>
               <option value="REVISION">ARCHIVE OLD AS REV</option>
               <option value="OVERWRITE">DIRECT OVERWRITE</option>
@@ -4295,7 +4295,7 @@ function renderSystemView(container: HTMLElement) {
             <div class="flex flex-col sm:flex-row gap-3">
               <label class="flex-1 text-center py-2 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 font-mono text-xs uppercase rounded cursor-pointer transition hover:text-white block select-none">
                 Select File(s)
-                <input type="file" id="system-unified-import-file" accept=".json,.md,.csv" multiple class="hidden">
+                <input type="file" id="system-unified-import-file" aria-label="Upload JSON, Markdown, or CSV backup files" accept=".json,.md,.csv" multiple class="hidden">
               </label>
               <div id="system-drop-zone" class="flex-[2] border-2 border-dashed border-slate-800 hover:border-teal-500/60 p-2 rounded flex items-center justify-center text-center transition-all cursor-pointer bg-slate-950/20 min-h-[38px]">
                 <span class="text-[9px] font-mono text-slate-400 uppercase">Or Drag & Drop files here</span>
@@ -4948,7 +4948,7 @@ function setupCommandPalette() {
   
   backdrop.innerHTML = `
     <div class="glass-panel border border-teal-900/30 rounded-xl w-full max-w-lg overflow-hidden shadow-2xl mx-4 glow-border">
-      <input type="text" id="command-palette-input" placeholder="Search pages or run system commands..." class="w-full bg-slate-950/80 text-white font-mono text-sm p-4 outline-none border-b border-slate-800 focus:border-teal-500/30 placeholder-slate-500 transition">
+      <input type="text" id="command-palette-input" aria-label="Search pages or run system commands" placeholder="Search pages or run system commands..." class="w-full bg-slate-950/80 text-white font-mono text-sm p-4 outline-none border-b border-slate-800 focus:border-teal-500/30 placeholder-slate-500 transition">
       <div id="command-palette-results" class="max-h-80 overflow-y-auto divide-y divide-slate-850/40 p-2 space-y-1"></div>
     </div>
   `;
@@ -5326,14 +5326,14 @@ async function renderGraphView(container: HTMLElement) {
         
         <!-- Search Input Overlay -->
         <div class="absolute top-6 left-6 z-10 select-none max-w-[200px] sm:max-w-xs">
-          <input type="text" id="map-search-input" placeholder="Search map nodes..." class="w-full bg-slate-950/90 border border-slate-800 focus:border-teal-500/50 hover:border-slate-700 rounded-lg py-1.5 px-3 text-xs text-slate-200 focus:outline-none transition font-mono shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
+          <input type="text" id="map-search-input" aria-label="Search map nodes" placeholder="Search map nodes..." class="w-full bg-slate-950/90 border border-slate-800 focus:border-teal-500/50 hover:border-slate-700 rounded-lg py-1.5 px-3 text-xs text-slate-200 focus:outline-none transition font-mono shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
         </div>
         
         <!-- Controls Overlay -->
         <div class="absolute top-6 right-6 flex flex-col gap-2 z-10 select-none">
-          <button id="map-zoom-in" title="Zoom In" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 font-bold rounded shadow transition focus:outline-none">＋</button>
-          <button id="map-zoom-out" title="Zoom Out" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 font-bold rounded shadow transition focus:outline-none">－</button>
-          <button id="map-zoom-reset" title="Reset View" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 text-[10px] font-mono rounded shadow transition focus:outline-none uppercase">RST</button>
+          <button id="map-zoom-in" title="Zoom In" aria-label="Zoom In" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 font-bold rounded shadow transition focus:outline-none">＋</button>
+          <button id="map-zoom-out" title="Zoom Out" aria-label="Zoom Out" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 font-bold rounded shadow transition focus:outline-none">－</button>
+          <button id="map-zoom-reset" title="Reset View" aria-label="Reset View" class="w-8 h-8 flex items-center justify-center bg-slate-900 border border-slate-800 hover:border-slate-700 hover:text-teal-400 text-slate-400 text-[10px] font-mono rounded shadow transition focus:outline-none uppercase">RST</button>
         </div>
 
         <!-- Legend Overlay -->
@@ -5979,7 +5979,7 @@ function showMasterUnlockScreen() {
       </div>
 
       <form id="master-unlock-form" class="space-y-4">
-        <input type="password" id="master-unlock-input" placeholder="Enter Master Passphrase..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-red-500/50 rounded-lg p-3 text-sm text-slate-200 focus:outline-none transition font-mono text-center">
+        <input type="password" id="master-unlock-input" aria-label="Master Passphrase" placeholder="Enter Master Passphrase..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-red-500/50 rounded-lg p-3 text-sm text-slate-200 focus:outline-none transition font-mono text-center">
         <div id="master-unlock-error" class="text-[10px] text-red-400 font-mono hidden">INCORRECT PASSPHRASE - DECRYPTION KEY DERIVATION FAILED</div>
         
         <div class="flex gap-2 pt-2">
@@ -6260,7 +6260,7 @@ function openDrawingCanvas(textarea: HTMLTextAreaElement) {
         
         <div class="flex items-center gap-2">
           <span class="text-[10px] font-mono text-slate-500 uppercase">Size:</span>
-          <select id="draw-brush-size" class="bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] font-mono text-slate-300 focus:outline-none cursor-pointer">
+          <select id="draw-brush-size" aria-label="Brush size" class="bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] font-mono text-slate-300 focus:outline-none cursor-pointer">
             <option value="2">Thin (2px)</option>
             <option value="5" selected>Medium (5px)</option>
             <option value="10">Thick (10px)</option>
@@ -6271,12 +6271,12 @@ function openDrawingCanvas(textarea: HTMLTextAreaElement) {
         <div class="flex items-center gap-2">
           <span class="text-[10px] font-mono text-slate-500 uppercase">Color:</span>
           <div class="flex gap-1" id="draw-color-palette">
-            <button class="w-4 h-4 rounded-full border border-white bg-white" data-color="#ffffff"></button>
-            <button class="w-4 h-4 rounded-full border border-transparent bg-teal-400" data-color="#2dd4bf"></button>
-            <button class="w-4 h-4 rounded-full border border-transparent bg-emerald-400" data-color="#34d399"></button>
-            <button class="w-4 h-4 rounded-full border border-transparent bg-blue-400" data-color="#60a5fa"></button>
-            <button class="w-4 h-4 rounded-full border border-transparent bg-amber-400" data-color="#fbbf24"></button>
-            <button class="w-4 h-4 rounded-full border border-transparent bg-red-400" data-color="#f87171"></button>
+            <button class="w-4 h-4 rounded-full border border-white bg-white" data-color="#ffffff" aria-label="Select color white"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-teal-400" data-color="#2dd4bf" aria-label="Select color teal"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-emerald-400" data-color="#34d399" aria-label="Select color emerald"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-blue-400" data-color="#60a5fa" aria-label="Select color blue"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-amber-400" data-color="#fbbf24" aria-label="Select color amber"></button>
+            <button class="w-4 h-4 rounded-full border border-transparent bg-red-400" data-color="#f87171" aria-label="Select color red"></button>
           </div>
         </div>
         
@@ -7054,7 +7054,7 @@ export function showShortcutCheatSheet() {
     <div class="bg-slate-950 border border-slate-800 rounded-xl p-6 w-full max-w-md shadow-2xl glow-border">
       <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
         <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider flex items-center gap-1.5">⌨️ Terminal Hotkeys</h3>
-        <button id="close-shortcuts-modal" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
+        <button id="close-shortcuts-modal" aria-label="Close shortcuts modal" class="text-slate-500 hover:text-white font-bold font-mono text-xs focus:outline-none">✕</button>
       </div>
       <div class="space-y-3 font-mono text-xs text-slate-300">
         <div class="flex justify-between items-center py-1 border-b border-slate-900/60">
@@ -7176,7 +7176,7 @@ export function showPassphraseModal(mode: 'activate' | 'deactivate'): Promise<st
         
         <form id="passphrase-modal-form" class="space-y-4">
           <div>
-            <input type="password" id="passphrase-modal-input" placeholder="ENTER PASSPHRASE..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none transition font-mono text-center">
+            <input type="password" id="passphrase-modal-input" aria-label="Security Passphrase" placeholder="ENTER PASSPHRASE..." required class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/50 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none transition font-mono text-center">
             
             ${isActivate ? `
               <!-- Passphrase strength indicator -->
