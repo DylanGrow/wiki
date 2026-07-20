@@ -158,6 +158,82 @@ renderer.code = (code, lang) => {
     matrixHtml += '</div></div>';
     return matrixHtml;
   }
+
+  if (language === 'runbook' || language === 'incident') {
+    const lines = code.split('\n');
+    let html = '<div class="bg-slate-950 p-5 rounded-lg border border-slate-800 my-4 space-y-3 font-mono text-xs select-none">';
+    html += '<div class="text-[10px] font-bold text-teal-400 uppercase tracking-widest border-b border-slate-800 pb-2 flex items-center justify-between"><span>🚨 Executable Incident Response Runbook</span><span class="text-[9px] text-slate-400">Step Checklist</span></div>';
+    html += '<div class="space-y-2 pt-1">';
+    lines.forEach((line, idx) => {
+      const clean = line.trim();
+      if (!clean) return;
+      const parts = clean.split('|');
+      let stepName = `Step ${idx + 1}`;
+      let title = clean;
+      let status = 'Pending';
+      if (parts.length >= 2) {
+        stepName = parts[0].trim();
+        title = parts[1].trim();
+        status = parts[2] ? parts[2].trim() : 'Pending';
+      }
+
+      let badgeBg = 'bg-slate-900 text-slate-400 border-slate-800';
+      const st = status.toLowerCase();
+      if (st.includes('complete') || st.includes('done')) badgeBg = 'bg-emerald-950/60 text-emerald-400 border-emerald-800';
+      else if (st.includes('progress') || st.includes('active')) badgeBg = 'bg-teal-950/60 text-teal-400 border-teal-800';
+      else if (st.includes('fail') || st.includes('block')) badgeBg = 'bg-red-950/60 text-red-400 border-red-800';
+
+      const isChecked = st.includes('complete') || st.includes('done');
+
+      html += `
+        <div class="flex items-center justify-between gap-3 p-2.5 bg-slate-900/40 border border-slate-850 rounded-lg">
+          <div class="flex items-center gap-3">
+            <input type="checkbox" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded border-slate-700 bg-slate-950 text-teal-500 cursor-pointer">
+            <span class="text-[10px] text-teal-400 font-bold">${escapeHtml(stepName)}:</span>
+            <span class="font-bold text-slate-200">${escapeHtml(title)}</span>
+          </div>
+          <span class="px-2 py-0.5 border rounded text-[9px] uppercase font-bold shrink-0 ${badgeBg}">${escapeHtml(status)}</span>
+        </div>
+      `;
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  if (language === 'intel-summary') {
+    const lines = code.split('\n');
+    const cards: { label: string; value: string }[] = [];
+    lines.forEach(line => {
+      const clean = line.trim();
+      if (!clean) return;
+      clean.split('|').forEach(part => {
+        const [k, v] = part.split(':').map(s => s.trim());
+        if (k && v) {
+          cards.push({ label: k, value: v });
+        }
+      });
+    });
+
+    let html = '<div class="bg-slate-950 p-5 rounded-lg border border-slate-800 my-4 select-none font-mono text-xs">';
+    html += '<div class="text-[10px] font-bold text-teal-400 uppercase tracking-widest border-b border-slate-800 pb-3 mb-4 flex items-center justify-between"><span>📊 Executive Intelligence Summary Dashboard</span></div>';
+    html += '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">';
+    cards.forEach(card => {
+      let valueColor = 'text-slate-200';
+      const v = card.value.toUpperCase();
+      if (v.includes('CRITICAL') || v.includes('HIGH')) valueColor = 'text-red-400 font-bold';
+      else if (v.includes('SECRET') || v.includes('CONFIDENTIAL')) valueColor = 'text-amber-400 font-bold';
+      else if (v.includes('CONTAINED') || v.includes('CLEARED') || v.includes('OK')) valueColor = 'text-emerald-400 font-bold';
+
+      html += `
+        <div class="bg-slate-900/60 border border-slate-800 p-3 rounded-lg flex flex-col justify-between">
+          <span class="text-[9px] text-slate-400 uppercase font-bold mb-1">${escapeHtml(card.label)}</span>
+          <span class="text-sm font-extrabold ${valueColor} break-words">${escapeHtml(card.value)}</span>
+        </div>
+      `;
+    });
+    html += '</div></div>';
+    return html;
+  }
   let html = code
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

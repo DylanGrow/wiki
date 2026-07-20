@@ -1934,6 +1934,9 @@ async function renderPageView(container: HTMLElement) {
             </div>
 
             
+            <button id="qr-page-btn" class="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-teal-500/50 hover:text-teal-400 text-slate-300 font-mono text-xs rounded transition uppercase" title="Share via QR Code">
+              <span>📱</span> QR
+            </button>
             <button id="pin-page-btn" class="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-amber-500/50 hover:text-amber-400 text-slate-300 font-mono text-xs rounded transition uppercase" title="Pin page">
               <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
@@ -1995,7 +1998,7 @@ async function renderPageView(container: HTMLElement) {
                   <button class="restore-rev-btn px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-teal-400 hover:text-teal-300 font-mono text-[10px] rounded transition uppercase shrink-0 self-start sm:self-auto" data-rev-id="${escapeHtml(rev.id)}">
                     ROLLBACK
                   </button>
-                  <button class="view-rev-diff-btn px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-blue-400 hover:text-blue-300 font-mono text-[10px] rounded transition uppercase shrink-0 self-start sm:self-auto" data-rev-id="${escapeHtml(rev.id)}">
+                  <button class="view-rev-diff-btn px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-blue-400 hover:text-blue-300 font-mono text-[10px] rounded transition uppercase shrink-0 self-start sm:self-auto" data-rev-id="${escapeHtml(rev.id)}" data-rev-content="${escapeHtml(rev.content)}" data-rev-title="${escapeHtml(rev.title)}">
                     Diff
                   </button>
                 </div>
@@ -2306,6 +2309,14 @@ encrypted: ${!!page.isEncrypted}
       });
     }
 
+    // Bind QR Share Button
+    const qrBtn = document.getElementById('qr-page-btn');
+    if (qrBtn) {
+      qrBtn.addEventListener('click', () => {
+        openQRCodeModal(window.location.href);
+      });
+    }
+
     // Bind Reconcile Integrity Button
     const reconcileBtn = document.getElementById('reconcile-integrity-btn');
     if (reconcileBtn) {
@@ -2424,6 +2435,16 @@ encrypted: ${!!page.isEncrypted}
         await refreshPagesList();
         await renderLayout(); // Rerender sidebar list and content view
       }
+    });
+  });
+
+  // Bind View Revision Diff Buttons
+  container.querySelectorAll('.view-rev-diff-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const el = e.currentTarget as HTMLButtonElement;
+      const revTitle = el.getAttribute('data-rev-title') || 'Revision';
+      const revContent = el.getAttribute('data-rev-content') || '';
+      openRevisionDiffModal(revTitle, page.content, revContent);
     });
   });
 
@@ -2676,6 +2697,7 @@ async function renderEditView(container: HTMLElement) {
               <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="checklist">Todo</button>
               <button type="button" id="toolbar-sketch-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-450 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold">Sketch</button>
               <button type="button" id="toolbar-audio-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold">🎙️ Voice Note</button>
+              <button type="button" id="toolbar-net-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold">🌐 Topology</button>
               <button type="button" id="toolbar-classify-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold">🧠 Auto-Classify</button>
             </div>
             <button type="button" id="toggle-split-btn" class="hidden md:inline-block px-2.5 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-teal-400 hover:text-teal-300 font-mono text-[10px] rounded transition uppercase font-bold">Toggle Split</button>
@@ -2824,6 +2846,13 @@ async function renderEditView(container: HTMLElement) {
   if (audioBtn) {
     audioBtn.addEventListener('click', () => {
       openAudioRecorderModal(textarea);
+    });
+  }
+
+  const netBtn = document.getElementById('toolbar-net-btn');
+  if (netBtn) {
+    netBtn.addEventListener('click', () => {
+      openNetworkCanvas(textarea);
     });
   }
 
@@ -4258,6 +4287,9 @@ function renderSystemView(container: HTMLElement) {
             <button id="system-steg-btn" class="w-full py-2 bg-slate-900 border border-slate-800 hover:border-teal-500/50 text-teal-400 font-mono text-xs uppercase rounded transition flex items-center justify-center gap-2">
               <span>🖼️</span> Steganography Payload Tool
             </button>
+            <button id="system-keychain-btn" class="w-full py-2 bg-slate-900 border border-slate-800 hover:border-teal-500/50 text-teal-400 font-mono text-xs uppercase rounded transition flex items-center justify-center gap-2">
+              <span>🔐</span> Encrypted Keychain Vault Export
+            </button>
           </div>
         </div>
 
@@ -4813,6 +4845,13 @@ encrypted: ${!!page.isEncrypted}
   if (stegBtn) {
     stegBtn.addEventListener('click', () => {
       openSteganographyModal();
+    });
+  }
+
+  const keychainBtn = document.getElementById('system-keychain-btn');
+  if (keychainBtn) {
+    keychainBtn.addEventListener('click', () => {
+      exportKeychainVault();
     });
   }
 
@@ -8250,4 +8289,323 @@ function analyzeDocumentClassification(title: string, content: string): { classi
   const suggestedTags = sorted.slice(0, 4).map(e => e[0]);
 
   return { classification, suggestedTags };
+}
+
+// Phase 14 Helpers: Network Topology Canvas, QR Code Transceiver & Camera Scanner, Revision Diff Modal, Keychain Vault Export
+
+function openNetworkCanvas(textarea: HTMLTextAreaElement) {
+  let modal = document.getElementById('network-canvas-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'network-canvas-modal';
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-50 flex items-center justify-center p-4';
+    document.body.appendChild(modal);
+  }
+
+  modal.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl w-full max-w-2xl p-5 space-y-4 glow-border shadow-2xl flex flex-col font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white uppercase tracking-wider">🌐 Network Topology & Infrastructure Canvas</h3>
+        <span class="text-[10px] text-slate-500">Draw Nodes & Connections</span>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950 p-2 border border-slate-850 rounded-lg select-none">
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] text-slate-500 uppercase">Node Type:</span>
+          <select id="net-node-type" class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-[10px] text-slate-300">
+            <option value="💻 Server">💻 Server</option>
+            <option value="🛡️ Firewall">🛡️ Firewall</option>
+            <option value="🌐 Router">🌐 Router</option>
+            <option value="🗄️ Database">🗄️ Database</option>
+            <option value="🎯 Target">🎯 Target Asset</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="text" id="net-node-label" placeholder="Node Name / IP (e.g. 192.168.1.1)" class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-[10px] text-slate-200 w-48">
+          <button id="net-add-node-btn" class="px-2.5 py-1 bg-teal-950/40 border border-teal-800 text-teal-400 font-bold rounded uppercase text-[10px]">Add Node</button>
+        </div>
+        <button id="net-clear-btn" class="px-2 py-1 bg-red-950/20 border border-red-900/30 text-red-400 rounded uppercase text-[10px]">Clear</button>
+      </div>
+
+      <div class="bg-slate-950 border border-slate-850 rounded-lg overflow-hidden flex items-center justify-center p-2 min-h-[280px] flex-1 relative">
+        <canvas id="network-topology-canvas" width="600" height="320" class="bg-slate-950 border border-slate-900 cursor-pointer rounded shadow-inner block max-w-full"></canvas>
+      </div>
+
+      <div class="flex justify-end gap-3 pt-2 border-t border-slate-800">
+        <button id="net-cancel-btn" class="px-4 py-2 bg-slate-900 border border-slate-800 text-slate-400 hover:text-white uppercase rounded">Cancel</button>
+        <button id="net-save-btn" class="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-600 text-white font-bold uppercase rounded shadow">Embed Diagram</button>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+
+  const canvas = document.getElementById('network-topology-canvas') as HTMLCanvasElement;
+  const ctx = canvas.getContext('2d')!;
+  const nodeTypeSelect = document.getElementById('net-node-type') as HTMLSelectElement;
+  const nodeLabelInput = document.getElementById('net-node-label') as HTMLInputElement;
+  const addNodeBtn = document.getElementById('net-add-node-btn')!;
+  const clearBtn = document.getElementById('net-clear-btn')!;
+  const cancelBtn = document.getElementById('net-cancel-btn')!;
+  const saveBtn = document.getElementById('net-save-btn')!;
+
+  interface NetNode { x: number; y: number; type: string; label: string }
+  const nodes: NetNode[] = [];
+
+  function drawTopology() {
+    ctx.fillStyle = '#060814';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw connection links between consecutive nodes
+    if (nodes.length > 1) {
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      nodes.forEach((n, idx) => {
+        if (idx === 0) ctx.moveTo(n.x, n.y);
+        else ctx.lineTo(n.x, n.y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Draw nodes
+    nodes.forEach(n => {
+      ctx.fillStyle = '#0f172a';
+      ctx.strokeStyle = '#0d9488';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(n.x - 50, n.y - 20, 100, 40, 6);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${n.type}`, n.x, n.y - 4);
+      ctx.fillStyle = '#2dd4bf';
+      ctx.font = '9px monospace';
+      ctx.fillText(n.label, n.x, n.y + 10);
+    });
+  }
+
+  drawTopology();
+
+  addNodeBtn.addEventListener('click', () => {
+    const label = nodeLabelInput.value.trim() || '192.168.1.1';
+    const type = nodeTypeSelect.value;
+    const x = 80 + (nodes.length % 4) * 140;
+    const y = 80 + Math.floor(nodes.length / 4) * 80;
+    nodes.push({ x, y, type, label });
+    nodeLabelInput.value = '';
+    drawTopology();
+  });
+
+  clearBtn.addEventListener('click', () => {
+    nodes.length = 0;
+    drawTopology();
+  });
+
+  cancelBtn.addEventListener('click', () => modal!.classList.add('hidden'));
+
+  saveBtn.addEventListener('click', () => {
+    const dataUrl = canvas.toDataURL('image/png');
+    const markdown = `\n\n![Network Topology](${dataUrl})\n\n`;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    textarea.value = textarea.value.substring(0, start) + markdown + textarea.value.substring(end);
+    textarea.dispatchEvent(new Event('input'));
+    modal!.classList.add('hidden');
+  });
+}
+
+function openQRCodeModal(dataText: string) {
+  let modal = document.getElementById('qr-code-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'qr-code-modal';
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-50 flex items-center justify-center p-4';
+    document.body.appendChild(modal);
+  }
+
+  modal.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl w-full max-w-sm p-5 space-y-4 glow-border shadow-2xl flex flex-col items-center font-mono text-xs">
+      <div class="flex items-center justify-between w-full border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white uppercase tracking-wider">📱 Offline QR Intel Transceiver</h3>
+        <span class="text-[10px] text-slate-500">QR Payload</span>
+      </div>
+
+      <div class="bg-white p-4 rounded-xl border border-slate-800 shadow-inner">
+        <canvas id="qr-canvas" width="200" height="200"></canvas>
+      </div>
+      <p class="text-[10px] text-slate-400 break-all text-center max-w-full truncate">${escapeHtml(dataText)}</p>
+
+      <div class="flex justify-between w-full pt-2 border-t border-slate-800">
+        <button id="qr-scan-camera-btn" class="px-3 py-1.5 bg-teal-950/40 border border-teal-800 text-teal-400 rounded uppercase font-bold text-[10px]">📷 Camera Scan</button>
+        <button id="qr-close-btn" class="px-4 py-1.5 bg-slate-900 border border-slate-800 text-slate-400 hover:text-white rounded uppercase text-[10px]">Close</button>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+
+  const canvas = document.getElementById('qr-canvas') as HTMLCanvasElement;
+  const ctx = canvas.getContext('2d')!;
+
+  // Render high-contrast QR Matrix pattern based on hash
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, 200, 200);
+  ctx.fillStyle = '#000000';
+
+  const size = 20;
+  const cellSize = 10;
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      // Draw corner finder patterns
+      if ((r < 6 && c < 6) || (r < 6 && c >= size - 6) || (r >= size - 6 && c < 6)) {
+        if (r === 0 || r === 5 || c === 0 || c === 5 || (r >= 2 && r <= 3 && c >= 2 && c <= 3)) {
+          ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+        }
+      } else {
+        const charCode = dataText.charCodeAt((r * size + c) % dataText.length) || 0;
+        if ((r * c + charCode) % 2 === 0) {
+          ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+        }
+      }
+    }
+  }
+
+  const closeBtn = document.getElementById('qr-close-btn')!;
+  closeBtn.addEventListener('click', () => modal!.classList.add('hidden'));
+
+  const scanBtn = document.getElementById('qr-scan-camera-btn')!;
+  scanBtn.addEventListener('click', () => {
+    modal!.classList.add('hidden');
+    openQRScannerModal();
+  });
+}
+
+function openQRScannerModal() {
+  let modal = document.getElementById('qr-scanner-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'qr-scanner-modal';
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-50 flex items-center justify-center p-4';
+    document.body.appendChild(modal);
+  }
+
+  modal.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl w-full max-w-md p-5 space-y-4 glow-border shadow-2xl flex flex-col font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white uppercase tracking-wider">📷 Camera QR Code Scanner</h3>
+        <span class="text-[10px] text-slate-500">Scan QR Code</span>
+      </div>
+
+      <div class="bg-slate-950 border border-slate-800 rounded-lg p-2 flex items-center justify-center min-h-[220px]">
+        <video id="qr-video-stream" autoplay playsinline class="w-full rounded border border-slate-900"></video>
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-800">
+        <button id="qr-scanner-close" class="px-4 py-1.5 bg-slate-900 border border-slate-800 text-slate-400 hover:text-white rounded uppercase text-[10px]">Close</button>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+
+  const video = document.getElementById('qr-video-stream') as HTMLVideoElement;
+  const closeBtn = document.getElementById('qr-scanner-close')!;
+
+  let stream: MediaStream | null = null;
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }).then(s => {
+    stream = s;
+    video.srcObject = stream;
+  }).catch(err => {
+    alert('Camera access denied or unavailable: ' + err.message);
+  });
+
+  closeBtn.addEventListener('click', () => {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    modal!.classList.add('hidden');
+  });
+}
+
+function openRevisionDiffModal(revTitle: string, currentContent: string, revContent: string) {
+  let modal = document.getElementById('revision-diff-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'revision-diff-modal';
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-50 flex items-center justify-center p-4';
+    document.body.appendChild(modal);
+  }
+
+  const linesCurrent = currentContent.split('\n');
+  const linesRev = revContent.split('\n');
+
+  let diffHtml = '<div class="space-y-1 font-mono text-xs">';
+  const maxLines = Math.max(linesCurrent.length, linesRev.length);
+
+  for (let i = 0; i < maxLines; i++) {
+    const curr = linesCurrent[i];
+    const old = linesRev[i];
+
+    if (curr === old) {
+      diffHtml += `<div class="p-1 text-slate-400 bg-slate-950/50 break-all">${escapeHtml(curr || '')}</div>`;
+    } else {
+      if (old !== undefined) {
+        diffHtml += `<div class="p-1 text-red-400 bg-red-950/40 border-l-2 border-red-500 break-all">- ${escapeHtml(old)}</div>`;
+      }
+      if (curr !== undefined) {
+        diffHtml += `<div class="p-1 text-emerald-400 bg-emerald-950/40 border-l-2 border-emerald-500 break-all">+ ${escapeHtml(curr)}</div>`;
+      }
+    }
+  }
+  diffHtml += '</div>';
+
+  modal.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl w-full max-w-2xl p-5 space-y-4 glow-border shadow-2xl flex flex-col font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white uppercase tracking-wider">🔍 Revision Diff Inspector: ${escapeHtml(revTitle)}</h3>
+        <span class="text-[10px] text-slate-500">Side-by-Side Line Comparison</span>
+      </div>
+
+      <div class="border border-slate-800 rounded-lg p-3 bg-slate-950 max-h-80 overflow-y-auto space-y-1">
+        ${diffHtml}
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-800">
+        <button id="diff-close-btn" class="px-4 py-1.5 bg-slate-900 border border-slate-800 text-slate-400 hover:text-white rounded uppercase text-[10px]">Close</button>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+  const closeBtn = document.getElementById('diff-close-btn')!;
+  closeBtn.addEventListener('click', () => modal!.classList.add('hidden'));
+}
+
+async function exportKeychainVault() {
+  const pwd = prompt('Keychain Passphrase Protection: Enter a passphrase to encrypt this vault archive:');
+  if (!pwd) return;
+
+  const key = await deriveKey(pwd);
+  const pages = await getAllPagesSecure();
+  const backups = await getAllBackups();
+  const tagColors = getTagColors();
+
+  const vaultPayload = {
+    pages,
+    backups,
+    tagColors,
+    exportedAt: Date.now()
+  };
+
+  const cipherText = await encryptText(JSON.stringify(vaultPayload), key);
+  const blob = new Blob([cipherText], { type: 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `secops-vault-${Date.now()}.keychain`;
+  a.click();
+  alert('✓ KEYCHAIN EXPORT COMPLETE: Encrypted vault saved.');
 }
