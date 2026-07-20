@@ -1,5 +1,4 @@
-import { saveBackup } from './db.ts';
-import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, PageRevision, saveRevision, getPageRevisions, deleteRevision, getTagColors, saveTagColor, clearDatabase, Attachment, AuditLog, saveAttachment, getAttachment, saveAuditLog, getAllAuditLogs, clearAuditLogs, pruneAuditLogs , getAllAttachments} from './db';
+import { seedDatabase, getAllPages, getPage, savePage, deletePage, WikiPage, PageRevision, saveRevision, getPageRevisions, deleteRevision, getTagColors, saveTagColor, clearDatabase, Attachment, AuditLog, saveAttachment, getAttachment, saveAuditLog, getAllAuditLogs, clearAuditLogs, pruneAuditLogs, getAllAttachments, getAllBackups, saveBackup, deleteBackup, Backup } from './db';
 import { renderMarkdownSecure, validateImportedPage, escapeHtml, getSanitizationCount, sanitizeUnicode, deriveKey, encryptText, decryptText, computePageSignature } from './security';
 import './index.css';
 
@@ -2676,6 +2675,8 @@ async function renderEditView(container: HTMLElement) {
               <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="table">Table</button>
               <button type="button" class="format-btn px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold" data-format="checklist">Todo</button>
               <button type="button" id="toolbar-sketch-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-450 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold">Sketch</button>
+              <button type="button" id="toolbar-audio-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold">🎙️ Voice Note</button>
+              <button type="button" id="toolbar-classify-btn" class="px-2 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-400 font-mono text-[10px] rounded hover:text-white transition uppercase font-bold">🧠 Auto-Classify</button>
             </div>
             <button type="button" id="toggle-split-btn" class="hidden md:inline-block px-2.5 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-teal-400 hover:text-teal-300 font-mono text-[10px] rounded transition uppercase font-bold">Toggle Split</button>
           </div>
@@ -2816,6 +2817,31 @@ async function renderEditView(container: HTMLElement) {
   if (sketchBtn) {
     sketchBtn.addEventListener('click', () => {
       openDrawingCanvas(textarea);
+    });
+  }
+
+  const audioBtn = document.getElementById('toolbar-audio-btn');
+  if (audioBtn) {
+    audioBtn.addEventListener('click', () => {
+      openAudioRecorderModal(textarea);
+    });
+  }
+
+  const classifyBtn = document.getElementById('toolbar-classify-btn');
+  if (classifyBtn) {
+    classifyBtn.addEventListener('click', () => {
+      const titleInput = document.getElementById('edit-title') as HTMLInputElement;
+      const classSelect = document.getElementById('edit-classification') as HTMLSelectElement;
+      const tagsInput = document.getElementById('edit-tags') as HTMLInputElement;
+
+      const analysis = analyzeDocumentClassification(titleInput ? titleInput.value : '', textarea.value);
+      if (classSelect) classSelect.value = analysis.classification;
+      if (tagsInput) {
+        const existingTags = new Set(tagsInput.value.split(',').map(t => t.trim()).filter(Boolean));
+        analysis.suggestedTags.forEach(t => existingTags.add(t));
+        tagsInput.value = Array.from(existingTags).join(', ');
+      }
+      alert(`✓ SMART ANALYSIS: Document classified as ${analysis.classification}. Tags updated.`);
     });
   }
   setupAttachmentHandlers(textarea);
@@ -4222,6 +4248,19 @@ function renderSystemView(container: HTMLElement) {
           </div>
         </div>
 
+        <!-- Phase 13 Tools: Steganography & Snapshot Comparer -->
+        <div class="glass-panel border border-slate-800 rounded-xl p-5 space-y-4">
+          <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider border-b border-slate-800 pb-2">Tactical Utilities</h3>
+          <div class="space-y-2.5">
+            <button id="system-snap-btn" class="w-full py-2 bg-slate-900 border border-slate-800 hover:border-teal-500/50 text-teal-400 font-mono text-xs uppercase rounded transition flex items-center justify-center gap-2">
+              <span>📸</span> Snapshots & History Diff
+            </button>
+            <button id="system-steg-btn" class="w-full py-2 bg-slate-900 border border-slate-800 hover:border-teal-500/50 text-teal-400 font-mono text-xs uppercase rounded transition flex items-center justify-center gap-2">
+              <span>🖼️</span> Steganography Payload Tool
+            </button>
+          </div>
+        </div>
+
         <!-- Database Telemetry -->
         <div class="glass-panel border border-slate-800 rounded-xl p-5 space-y-4">
           <h3 class="text-sm font-bold font-mono text-white uppercase tracking-wider border-b border-slate-800 pb-2">Database Stats</h3>
@@ -4759,6 +4798,21 @@ encrypted: ${!!page.isEncrypted}
     timeoutSelect.addEventListener('change', () => {
       localStorage.setItem('secops-wiki-session-timeout', timeoutSelect.value);
       resetInactivityTimeout();
+    });
+  }
+
+  // Bind Phase 13 Snapshot & Steganography buttons
+  const snapBtn = document.getElementById('system-snap-btn');
+  if (snapBtn) {
+    snapBtn.addEventListener('click', () => {
+      openSnapshotManagerModal();
+    });
+  }
+
+  const stegBtn = document.getElementById('system-steg-btn');
+  if (stegBtn) {
+    stegBtn.addEventListener('click', () => {
+      openSteganographyModal();
     });
   }
 
@@ -7731,4 +7785,469 @@ function sortTable(table: HTMLTableElement, colIdx: number, asc: boolean) {
 
   dataRows.forEach(row => tbody.appendChild(row));
   if (calcRow) tbody.appendChild(calcRow);
+}
+
+// Phase 13 Helpers: Audio Recorder, Steganography, Snapshot Manager, Auto-Classification
+
+function openAudioRecorderModal(textarea: HTMLTextAreaElement) {
+  let modal = document.getElementById('audio-recorder-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'audio-recorder-modal';
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-50 flex items-center justify-center p-4';
+    document.body.appendChild(modal);
+  }
+
+  modal.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl w-full max-w-md p-5 space-y-4 glow-border shadow-2xl flex flex-col font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white uppercase tracking-wider">🎙️ Audio Intel Voice Recorder</h3>
+        <span class="text-[10px] text-slate-500">Record briefing memo</span>
+      </div>
+
+      <div class="flex flex-col items-center justify-center bg-slate-950 p-6 rounded-lg border border-slate-800 space-y-4 text-center">
+        <div id="audio-timer" class="text-2xl font-bold text-teal-400 tracking-wider">00:00</div>
+        <div id="audio-status" class="text-[10px] text-slate-500 uppercase">Ready to record</div>
+        <audio id="audio-preview" controls class="hidden w-full mt-2 rounded border border-slate-800 bg-slate-900"></audio>
+      </div>
+
+      <div class="flex justify-between items-center gap-2 pt-2 border-t border-slate-800">
+        <div class="flex gap-2">
+          <button id="audio-rec-btn" class="px-3 py-1.5 bg-red-950/40 border border-red-900/50 text-red-400 hover:bg-red-900/40 rounded uppercase font-bold text-[10px]">● Record</button>
+          <button id="audio-stop-btn" disabled class="px-3 py-1.5 bg-slate-900 border border-slate-800 text-slate-500 rounded uppercase font-bold text-[10px]">■ Stop</button>
+        </div>
+        <div class="flex gap-2">
+          <button id="audio-cancel-btn" class="px-3 py-1.5 bg-slate-900 border border-slate-800 text-slate-400 hover:text-white rounded uppercase text-[10px]">Cancel</button>
+          <button id="audio-save-btn" disabled class="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-slate-950 font-bold rounded uppercase text-[10px]">Embed Memo</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+
+  const timerEl = document.getElementById('audio-timer')!;
+  const statusEl = document.getElementById('audio-status')!;
+  const previewEl = document.getElementById('audio-preview') as HTMLAudioElement;
+  const recBtn = document.getElementById('audio-rec-btn') as HTMLButtonElement;
+  const stopBtn = document.getElementById('audio-stop-btn') as HTMLButtonElement;
+  const cancelBtn = document.getElementById('audio-cancel-btn')!;
+  const saveBtn = document.getElementById('audio-save-btn') as HTMLButtonElement;
+
+  let mediaRecorder: MediaRecorder | null = null;
+  let audioChunks: Blob[] = [];
+  let startTime = 0;
+  let timerInterval: any = null;
+  let recordedBlob: Blob | null = null;
+
+  const cleanup = () => {
+    if (timerInterval) clearInterval(timerInterval);
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    modal!.classList.add('hidden');
+  };
+
+  cancelBtn.addEventListener('click', cleanup);
+
+  recBtn.addEventListener('click', async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        recordedBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        const audioUrl = URL.createObjectURL(recordedBlob);
+        previewEl.src = audioUrl;
+        previewEl.classList.remove('hidden');
+        saveBtn.disabled = false;
+        saveBtn.classList.replace('bg-slate-900', 'bg-teal-600');
+        statusEl.textContent = 'Recording complete. Preview available.';
+        stream.getTracks().forEach(t => t.stop());
+      };
+
+      mediaRecorder.start();
+      startTime = Date.now();
+      timerInterval = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const secs = String(elapsed % 60).padStart(2, '0');
+        timerEl.textContent = `${mins}:${secs}`;
+      }, 1000);
+
+      recBtn.disabled = true;
+      stopBtn.disabled = false;
+      stopBtn.classList.replace('text-slate-500', 'text-amber-400');
+      statusEl.textContent = 'RECORDING AUDIO BRIEFING...';
+    } catch (err: any) {
+      alert('Microphone access denied or unavailble: ' + err.message);
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    if (timerInterval) clearInterval(timerInterval);
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    recBtn.disabled = false;
+    stopBtn.disabled = true;
+  });
+
+  saveBtn.addEventListener('click', () => {
+    if (!recordedBlob) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64data = reader.result as string;
+      const markdown = `\n\n![Voice Briefing Memo](${base64data})\n\n`;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      textarea.value = textarea.value.substring(0, start) + markdown + textarea.value.substring(end);
+      textarea.dispatchEvent(new Event('input'));
+      cleanup();
+    };
+    reader.readAsDataURL(recordedBlob);
+  });
+}
+
+function openSteganographyModal() {
+  let modal = document.getElementById('steganography-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'steganography-modal';
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-50 flex items-center justify-center p-4';
+    document.body.appendChild(modal);
+  }
+
+  modal.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl w-full max-w-lg p-5 space-y-4 glow-border shadow-2xl flex flex-col font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white uppercase tracking-wider">🖼️ Steganographic Payload Encoder/Decoder</h3>
+        <span class="text-[10px] text-slate-500">LSB Image Encryption</span>
+      </div>
+
+      <div class="flex gap-2 border-b border-slate-800 pb-2">
+        <button id="steg-tab-hide" class="px-3 py-1.5 bg-teal-950/40 border border-teal-800 text-teal-400 font-bold rounded uppercase text-[10px]">Hide Intel</button>
+        <button id="steg-tab-extract" class="px-3 py-1.5 bg-slate-900 border border-slate-850 text-slate-400 font-bold rounded uppercase text-[10px]">Extract Intel</button>
+      </div>
+
+      <!-- Hide Tab Panel -->
+      <div id="steg-panel-hide" class="space-y-3">
+        <div>
+          <label class="block text-[10px] text-slate-400 uppercase mb-1">Select PNG Cover Image:</label>
+          <input type="file" id="steg-hide-file" accept="image/png,image/jpeg" class="w-full bg-slate-950 border border-slate-800 rounded p-2 text-[10px] text-slate-300">
+        </div>
+        <div>
+          <label class="block text-[10px] text-slate-400 uppercase mb-1">Secret Text Payload to Hide:</label>
+          <textarea id="steg-hide-text" rows="3" placeholder="Enter confidential message..." class="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono focus:outline-none"></textarea>
+        </div>
+        <button id="steg-encode-btn" class="w-full py-2 bg-gradient-to-r from-teal-600 to-cyan-600 text-white font-bold rounded uppercase">Encode & Download Steg PNG</button>
+      </div>
+
+      <!-- Extract Tab Panel -->
+      <div id="steg-panel-extract" class="hidden space-y-3">
+        <div>
+          <label class="block text-[10px] text-slate-400 uppercase mb-1">Select Steg PNG Image:</label>
+          <input type="file" id="steg-extract-file" accept="image/png" class="w-full bg-slate-950 border border-slate-800 rounded p-2 text-[10px] text-slate-300">
+        </div>
+        <button id="steg-decode-btn" class="w-full py-2 bg-slate-900 border border-slate-800 hover:border-teal-500 text-teal-400 font-bold rounded uppercase">Extract Hidden Payload</button>
+        <div id="steg-result-box" class="hidden p-3 bg-slate-950 border border-slate-800 rounded text-slate-200 text-xs font-mono break-all max-h-32 overflow-y-auto"></div>
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-800">
+        <button id="steg-close-btn" class="px-4 py-1.5 bg-slate-900 border border-slate-800 text-slate-400 hover:text-white rounded uppercase text-[10px]">Close</button>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+
+  const tabHide = document.getElementById('steg-tab-hide')!;
+  const tabExtract = document.getElementById('steg-tab-extract')!;
+  const panelHide = document.getElementById('steg-panel-hide')!;
+  const panelExtract = document.getElementById('steg-panel-extract')!;
+  const closeBtn = document.getElementById('steg-close-btn')!;
+
+  closeBtn.addEventListener('click', () => modal!.classList.add('hidden'));
+
+  tabHide.addEventListener('click', () => {
+    tabHide.className = 'px-3 py-1.5 bg-teal-950/40 border border-teal-800 text-teal-400 font-bold rounded uppercase text-[10px]';
+    tabExtract.className = 'px-3 py-1.5 bg-slate-900 border border-slate-850 text-slate-400 font-bold rounded uppercase text-[10px]';
+    panelHide.classList.remove('hidden');
+    panelExtract.classList.add('hidden');
+  });
+
+  tabExtract.addEventListener('click', () => {
+    tabExtract.className = 'px-3 py-1.5 bg-teal-950/40 border border-teal-800 text-teal-400 font-bold rounded uppercase text-[10px]';
+    tabHide.className = 'px-3 py-1.5 bg-slate-900 border border-slate-850 text-slate-400 font-bold rounded uppercase text-[10px]';
+    panelExtract.classList.remove('hidden');
+    panelHide.classList.add('hidden');
+  });
+
+  const encodeBtn = document.getElementById('steg-encode-btn')!;
+  const hideFileInput = document.getElementById('steg-hide-file') as HTMLInputElement;
+  const hideTextInput = document.getElementById('steg-hide-text') as HTMLTextAreaElement;
+
+  encodeBtn.addEventListener('click', () => {
+    const file = hideFileInput.files?.[0];
+    const text = hideTextInput.value.trim();
+    if (!file || !text) {
+      alert('Please select an image file and enter secret text payload.');
+      return;
+    }
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+      try {
+        const stegData = hideTextInImageData(imgData, text);
+        ctx.putImageData(stegData, 0, 0);
+        const a = document.createElement('a');
+        a.href = canvas.toDataURL('image/png');
+        a.download = `steg-intel-${Date.now()}.png`;
+        a.click();
+        alert('✓ STEGANOGRAPHY SUCCESS: Payload encoded into PNG pixels and downloaded.');
+      } catch (err: any) {
+        alert('Steganography encoding failed: ' + err.message);
+      }
+    };
+    img.src = URL.createObjectURL(file);
+  });
+
+  const decodeBtn = document.getElementById('steg-decode-btn')!;
+  const extractFileInput = document.getElementById('steg-extract-file') as HTMLInputElement;
+  const resultBox = document.getElementById('steg-result-box')!;
+
+  decodeBtn.addEventListener('click', () => {
+    const file = extractFileInput.files?.[0];
+    if (!file) {
+      alert('Please select a steg PNG image file.');
+      return;
+    }
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+      const secretText = extractTextFromImageData(imgData);
+      if (secretText) {
+        resultBox.innerHTML = `<span class="text-teal-400 font-bold block mb-1">✓ EXTRACTED HIDDEN INTEL:</span>${escapeHtml(secretText)}`;
+        resultBox.classList.remove('hidden');
+      } else {
+        alert('No steganographic payload signature detected in this image.');
+      }
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+function hideTextInImageData(imageData: ImageData, payloadText: string): ImageData {
+  const data = imageData.data;
+  const magic = 'STEG';
+  const fullText = magic + payloadText;
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(fullText);
+  
+  if (bytes.length * 8 + 32 > data.length / 4) {
+    throw new Error('Image dimensions are too small to encode this message length.');
+  }
+
+  // 32-bit length header
+  const len = bytes.length;
+  for (let i = 0; i < 32; i++) {
+    const bit = (len >> (31 - i)) & 1;
+    const pixelIdx = i * 4;
+    data[pixelIdx] = (data[pixelIdx] & 0xFE) | bit;
+  }
+
+  let bitIdx = 0;
+  for (let b = 0; b < bytes.length; b++) {
+    const byteVal = bytes[b];
+    for (let i = 7; i >= 0; i--) {
+      const bit = (byteVal >> i) & 1;
+      const pixelIdx = (32 + bitIdx) * 4;
+      data[pixelIdx] = (data[pixelIdx] & 0xFE) | bit;
+      bitIdx++;
+    }
+  }
+
+  return imageData;
+}
+
+function extractTextFromImageData(imageData: ImageData): string | null {
+  const data = imageData.data;
+  let length = 0;
+  for (let i = 0; i < 32; i++) {
+    const pixelIdx = i * 4;
+    const bit = data[pixelIdx] & 1;
+    length = (length << 1) | bit;
+  }
+
+  if (length <= 0 || length > (data.length / 4) - 32) {
+    return null;
+  }
+
+  const bytes = new Uint8Array(length);
+  let bitIdx = 0;
+  for (let b = 0; b < length; b++) {
+    let byteVal = 0;
+    for (let i = 7; i >= 0; i--) {
+      const pixelIdx = (32 + bitIdx) * 4;
+      const bit = data[pixelIdx] & 1;
+      byteVal = (byteVal << 1) | bit;
+      bitIdx++;
+    }
+    bytes[b] = byteVal;
+  }
+
+  const decoder = new TextDecoder();
+  const result = decoder.decode(bytes);
+  if (result.startsWith('STEG')) {
+    return result.substring(4);
+  }
+  return null;
+}
+
+async function openSnapshotManagerModal() {
+  let modal = document.getElementById('snapshot-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'snapshot-modal';
+    modal.className = 'fixed inset-0 bg-[#090d16]/90 backdrop-blur-md z-50 flex items-center justify-center p-4';
+    document.body.appendChild(modal);
+  }
+
+  const backups = await getAllBackups();
+
+  modal.innerHTML = `
+    <div class="glass-panel border border-slate-800 rounded-xl w-full max-w-xl p-5 space-y-4 glow-border shadow-2xl flex flex-col font-mono text-xs">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white uppercase tracking-wider">📸 Database Snapshot History & Comparer</h3>
+        <span class="text-[10px] text-slate-500">IndexedDB Snapshots</span>
+      </div>
+
+      <div class="flex justify-between items-center">
+        <button id="snap-create-btn" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-slate-950 font-bold rounded uppercase text-[10px]">Create New Snapshot</button>
+        <span class="text-[10px] text-slate-400">Total Snapshots: ${backups.length}</span>
+      </div>
+
+      <div class="border border-slate-800 rounded-lg p-3 bg-slate-950 max-h-60 overflow-y-auto space-y-2">
+        ${backups.length === 0 ? '<p class="text-slate-500 text-[10px] italic">No database snapshots archived.</p>' : ''}
+        ${backups.map(b => `
+          <div class="flex items-center justify-between p-2 bg-slate-900/60 border border-slate-800 rounded">
+            <div>
+              <p class="font-bold text-slate-200">${escapeHtml(b.name || 'Snapshot ' + b.id)}</p>
+              <p class="text-[9px] text-slate-500">${new Date(b.timestamp).toLocaleString()} • ${b.pageCount || 0} pages</p>
+            </div>
+            <div class="flex gap-2">
+              <button class="snap-restore-btn px-2 py-1 bg-teal-950/40 border border-teal-800 text-teal-400 rounded text-[9px] font-bold uppercase" data-id="${b.id}">Restore</button>
+              <button class="snap-del-btn px-2 py-1 bg-red-950/40 border border-red-900/40 text-red-400 rounded text-[9px] font-bold uppercase" data-id="${b.id}">Delete</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-800">
+        <button id="snap-close-btn" class="px-4 py-1.5 bg-slate-900 border border-slate-800 text-slate-400 hover:text-white rounded uppercase text-[10px]">Close</button>
+      </div>
+    </div>
+  `;
+
+  modal.classList.remove('hidden');
+
+  const closeBtn = document.getElementById('snap-close-btn')!;
+  closeBtn.addEventListener('click', () => modal!.classList.add('hidden'));
+
+  const createBtn = document.getElementById('snap-create-btn')!;
+  createBtn.addEventListener('click', async () => {
+    const name = prompt('Snapshot Name:', `Snapshot-${new Date().toLocaleDateString()}`);
+    if (!name) return;
+    const pages = await getAllPagesSecure();
+    const backupObj: Backup = {
+      id: `snap-${Date.now()}`,
+      name: name,
+      timestamp: Date.now(),
+      pageCount: pages.length,
+      data: JSON.stringify(pages)
+    };
+    await saveBackup(backupObj);
+    alert('✓ SNAPSHOT COMMITTED: Database state archived.');
+    openSnapshotManagerModal();
+  });
+
+  modal.querySelectorAll('.snap-del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id')!;
+      if (confirm('Delete this database snapshot?')) {
+        await deleteBackup(id);
+        openSnapshotManagerModal();
+      }
+    });
+  });
+
+  modal.querySelectorAll('.snap-restore-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id')!;
+      const verified = await requestVerificationChallenge('RESTORE DATABASE SNAPSHOT');
+      if (!verified) return;
+      
+      const backups = await getAllBackups();
+      const target = backups.find(b => b.id === id);
+      if (target) {
+        try {
+          const pages: WikiPage[] = JSON.parse(target.data);
+          for (const p of pages) {
+            await savePageSecure(p);
+          }
+          alert('✓ RESTORE COMPLETE: Database pages restored from snapshot.');
+          modal!.classList.add('hidden');
+          await refreshPagesList();
+          await renderLayout();
+        } catch (err: any) {
+          alert('Restore failed: ' + err.message);
+        }
+      }
+    });
+  });
+}
+
+function analyzeDocumentClassification(title: string, content: string): { classification: 'UNCLASSIFIED' | 'CONFIDENTIAL' | 'SECRET' | 'TOP SECRET'; suggestedTags: string[] } {
+  const combined = (title + ' ' + content).toLowerCase();
+  
+  let classification: 'UNCLASSIFIED' | 'CONFIDENTIAL' | 'SECRET' | 'TOP SECRET' = 'UNCLASSIFIED';
+  
+  const topSecretKeywords = ['nuclear', 'zero-day', 'covert', 'top secret', 'rootkit', 'exploit', 'payload', 'classified'];
+  const secretKeywords = ['vulnerability', 'credentials', 'session key', 'firewall bypass', 'malware', 'auth token', 'backdoor'];
+  const confidentialKeywords = ['internal', 'config', 'audit log', 'architecture', 'policy', 'restricted'];
+
+  if (topSecretKeywords.some(k => combined.includes(k))) {
+    classification = 'TOP SECRET';
+  } else if (secretKeywords.some(k => combined.includes(k))) {
+    classification = 'SECRET';
+  } else if (confidentialKeywords.some(k => combined.includes(k))) {
+    classification = 'CONFIDENTIAL';
+  }
+
+  // Extract frequent words as tags
+  const stopWords = new Set(['the', 'a', 'and', 'or', 'in', 'on', 'of', 'to', 'is', 'for', 'with', 'that', 'this', 'at', 'by', 'from', 'it', 'an', 'as', 'are', 'was', 'were', 'be', 'been']);
+  const words = combined.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !stopWords.has(w));
+  const counts = new Map<string, number>();
+  words.forEach(w => counts.set(w, (counts.get(w) || 0) + 1));
+  const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  const suggestedTags = sorted.slice(0, 4).map(e => e[0]);
+
+  return { classification, suggestedTags };
 }

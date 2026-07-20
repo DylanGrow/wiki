@@ -472,13 +472,35 @@ export async function deleteTemplate(id: string): Promise<void> {
   });
 }
 
-export interface Backup { id: string; timestamp: number; data: string; }
+export interface Backup { id: string; name?: string; timestamp: number; data: string; pageCount?: number; }
 export async function saveBackup(backup: Backup): Promise<void> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('backups', 'readwrite');
     const store = transaction.objectStore('backups');
     const request = store.put(backup);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve();
+  });
+}
+
+export async function getAllBackups(): Promise<Backup[]> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('backups', 'readonly');
+    const store = transaction.objectStore('backups');
+    const request = store.getAll();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result || []);
+  });
+}
+
+export async function deleteBackup(id: string): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('backups', 'readwrite');
+    const store = transaction.objectStore('backups');
+    const request = store.delete(id);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve();
   });

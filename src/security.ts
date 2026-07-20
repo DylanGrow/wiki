@@ -61,6 +61,103 @@ renderer.code = (code, lang) => {
       return diagramHtml;
     }
   }
+
+  if (language === 'gantt' || language === 'timeline') {
+    const lines = code.split('\n');
+    let html = '<div class="bg-slate-950 p-5 rounded-lg border border-slate-800 my-4 space-y-3 font-mono text-xs select-none">';
+    html += '<div class="text-[10px] font-bold text-teal-400 uppercase tracking-widest border-b border-slate-800 pb-2 flex items-center justify-between"><span>📅 Operational Timeline & Milestones</span></div>';
+    html += '<div class="space-y-2 pt-1">';
+    lines.forEach(line => {
+      const clean = line.trim();
+      if (!clean) return;
+      const parts = clean.split('|');
+      let dates = '';
+      let title = clean;
+      let status = 'Pending';
+
+      if (parts.length >= 2) {
+        dates = parts[0].trim();
+        title = parts[1].trim();
+        status = parts[2] ? parts[2].trim() : 'Pending';
+      }
+
+      let badgeBg = 'bg-slate-900 text-slate-400 border-slate-800';
+      const st = status.toLowerCase();
+      if (st.includes('complete')) badgeBg = 'bg-emerald-950/60 text-emerald-400 border-emerald-800';
+      else if (st.includes('progress')) badgeBg = 'bg-teal-950/60 text-teal-400 border-teal-800';
+      else if (st.includes('delay')) badgeBg = 'bg-amber-950/60 text-amber-400 border-amber-800';
+      else if (st.includes('critical')) badgeBg = 'bg-red-950/60 text-red-400 border-red-800';
+
+      html += `
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-slate-900/40 border border-slate-850 rounded-lg">
+          <div class="flex items-center gap-3">
+            <span class="w-2 h-2 rounded-full bg-teal-400 shrink-0"></span>
+            <span class="font-bold text-slate-200">${escapeHtml(title)}</span>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            ${dates ? `<span class="text-[10px] text-slate-400 font-mono">${escapeHtml(dates)}</span>` : ''}
+            <span class="px-2 py-0.5 border rounded text-[9px] uppercase font-bold ${badgeBg}">${escapeHtml(status)}</span>
+          </div>
+        </div>
+      `;
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  if (language === 'risk-matrix') {
+    const lines = code.split('\n');
+    const items: { l: number; i: number; title: string; status: string }[] = [];
+    lines.forEach(line => {
+      const clean = line.trim();
+      if (!clean) return;
+      let l = 1, i = 1, title = 'Risk Item', status = 'Medium';
+      clean.split('|').forEach(part => {
+        const [k, v] = part.split(':').map(s => s.trim());
+        if (k && v) {
+          const lk = k.toLowerCase();
+          if (lk.includes('like')) l = Math.min(5, Math.max(1, parseInt(v, 10) || 1));
+          else if (lk.includes('imp')) i = Math.min(5, Math.max(1, parseInt(v, 10) || 1));
+          else if (lk.includes('title')) title = v;
+          else if (lk.includes('status')) status = v;
+        }
+      });
+      items.push({ l, i, title, status });
+    });
+
+    let matrixHtml = '<div class="bg-slate-950 p-5 rounded-lg border border-slate-800 my-4 select-none font-mono text-xs">';
+    matrixHtml += '<div class="text-[10px] font-bold text-teal-400 uppercase tracking-widest border-b border-slate-800 pb-3 mb-4 flex items-center justify-between"><span>🎯 5x5 Tactical Risk & Threat Heatmap</span><span class="text-[9px] text-slate-400">Likelihood vs Impact</span></div>';
+    matrixHtml += '<div class="grid grid-cols-6 gap-1.5 text-center text-[10px] font-mono">';
+    
+    matrixHtml += '<div class="p-1 font-bold text-slate-400">I \\ L</div>';
+    for (let l = 1; l <= 5; l++) {
+      matrixHtml += `<div class="p-1 font-bold text-slate-300">L${l}</div>`;
+    }
+
+    for (let imp = 5; imp >= 1; imp--) {
+      matrixHtml += `<div class="p-1 font-bold text-slate-300 flex items-center justify-center">I${imp}</div>`;
+      for (let lk = 1; lk <= 5; lk++) {
+        const score = imp * lk;
+        let cellBg = 'bg-emerald-950/20 border-emerald-900/30 text-emerald-400';
+        if (score >= 15) cellBg = 'bg-red-950/50 border-red-900/50 text-red-400 font-bold';
+        else if (score >= 9) cellBg = 'bg-amber-950/40 border-amber-900/40 text-amber-400';
+        else if (score >= 5) cellBg = 'bg-teal-950/30 border-teal-900/30 text-teal-400';
+
+        const matchingItems = items.filter(it => it.l === lk && it.i === imp);
+        const cellContent = matchingItems.map(it => `<div class="truncate px-1 py-0.5 bg-slate-900/90 rounded text-[9px] border border-slate-700 my-0.5" title="${escapeHtml(it.title)} (${escapeHtml(it.status)})">${escapeHtml(it.title)}</div>`).join('');
+
+        matrixHtml += `
+          <div class="min-h-[44px] p-1 border rounded flex flex-col justify-center items-center ${cellBg}">
+            <span class="text-[8px] opacity-40 mb-0.5">${score}</span>
+            ${cellContent}
+          </div>
+        `;
+      }
+    }
+
+    matrixHtml += '</div></div>';
+    return matrixHtml;
+  }
   let html = code
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
